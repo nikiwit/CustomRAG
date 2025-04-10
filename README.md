@@ -93,13 +93,13 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
 ## Folder Structure
 
 CustomRAG/
-    data/             # <-- Place your knowledge base items there (e.g., .pdf, .docx, .txt)
-    vector_store/     # Stores the generated vector embeddings (created automatically, ignored by Git)
-    venv/             # Python virtual environment folder (if named 'venv', ignored by Git)
-    app.py            # Main application Python script
-    requirements.txt  # List of Python dependencies to install
-    .gitignore        # Specifies intentionally untracked files/folders for Git
-    README.md         # This documentation file
+|--  data/             # <-- Place your knowledge base items there (e.g., .pdf, .docx, .txt)
+|--  vector_store/     # Stores the generated vector embeddings (created automatically, ignored by Git)
+|--  venv/             # Python virtual environment folder (if named 'venv', ignored by Git)
+|--  app.py            # Main application Python script
+|--  requirements.txt  # List of Python dependencies to install
+|--  .gitignore        # Specifies intentionally untracked files/folders for Git
+|--  README.md         # This documentation file
 
 *(Note: Your virtual environment folder might have a different name like `.venv` or `RAGenv`. Ensure your `.gitignore` file lists the name you use)*
 
