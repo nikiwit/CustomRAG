@@ -179,58 +179,150 @@ if __name__ == "__main__":
 
     vector_store = None
     # Check if vector store needs to be created or updated
-    # Simple check: If directory exists, load it. Otherwise, create it.
-    # For robust updates, you might need more complex logic (e.g., check file modification times).
     if not os.path.exists(PERSIST_PATH) or not os.listdir(PERSIST_PATH):
         print("No existing vector store found or directory is empty. Creating a new one...")
-        # Load documents
         documents = load_documents(DATA_PATH, LOADER_GLOB)
         if documents:
-            # Split documents
             chunks = split_documents(documents)
-            # Create and persist vector store if chunks exist
             if chunks:
-                 vector_store = get_vector_store(chunks, embeddings, PERSIST_PATH)
+                vector_store = get_vector_store(chunks, embeddings, PERSIST_PATH)
             else:
-                 print("No processable content found in documents after splitting.")
+                print("No processable content found in documents after splitting.")
         else:
             print("Could not create vector store because no documents were loaded.")
             print(f"Please ensure files (.txt, .md, .pdf, .docx, .pptx) exist in '{DATA_PATH}'")
-            print("And that you have run 'pip install -r requirements.txt' after updating it.")
+            print("And that you have run 'pip install -r requirements.txt'.") # Removed 'after updating it' for clarity
     else:
-        # Load existing vector store
         print(f"Found existing vector store.")
-        vector_store = get_vector_store(None, embeddings, PERSIST_PATH) # Pass None for chunks as we are loading
+        vector_store = get_vector_store(None, embeddings, PERSIST_PATH)
 
-    # Proceed only if vector store is successfully loaded or created
     if vector_store:
-        # Setup RAG chain
-        rag_chain = setup_rag_chain(vector_store, LLM_MODEL_NAME)
+        # --- Prepare RAG components ---
+        print("Setting up RAG components...")
 
-        if rag_chain:
-            print("\n--- RAG System Ready ---")
-            print("Ask questions about the documents in your 'data' folder.")
-            print("Type 'exit' or 'quit' to stop.")
-            # Interaction loop
-            while True:
+        # 1. Retriever
+        retriever = vector_store.as_retriever(
+            search_type="similarity",
+            search_kwargs={'k': 5} # Retrieve top 5 relevant chunks
+        )
+        print(f"Retriever configured (k={retriever.search_kwargs.get('k', 'default')})")
+
+        # 2. Prompt Template
+        template = """
+        You are a helpful assistant. Answer the question based only on the following context provided.
+        If the context does not contain the answer, state that you don't have enough information from the provided documents.
+        Do not make up information. Be concise.
+
+        Context:
+        {context}
+
+        Question: {question}
+
+        Answer:
+        """
+        prompt = ChatPromptTemplate.from_template(template)
+        print("Prompt template prepared.")
+
+        # 3. LLM
+        llm = Ollama(model=LLM_MODEL_NAME)
+        print(f"Initialized LLM with model: {LLM_MODEL_NAME}")
+
+        # 4. Output Parser
+        output_parser = StrOutputParser()
+        print("Output parser prepared.")
+
+        # Helper function to format docs (can be defined here or kept global)
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
+
+        print("\n--- RAG System Ready ---")
+        print("Ask questions about the documents in your 'data' folder.")
+        print("Type 'exit' or 'quit' to stop.")
+
+        # --- Interaction loop with enhanced thinking process output ---
+        while True:
+            try:
+                query = input("\nYour Question: ")
+                if query.strip().lower() in ["exit", "quit"]:
+                    print("Exiting...")
+                    break
+                if not query.strip():
+                    print("Please enter a question.")
+                    continue
+
+                print("\n--- Thinking Process ---")
+                start_time = time.time()
+
+                # Step 1: Retrieve relevant documents
+                print(f"1. Retrieving documents for: '{query[:50]}...'") # Show truncated query
+                retrieval_start_time = time.time()
+                retrieved_docs = retriever.invoke(query)
+                retrieval_end_time = time.time()
+                print(f"   Retrieved {len(retrieved_docs)} chunks in {retrieval_end_time - retrieval_start_time:.2f}s.")
+
+                if not retrieved_docs:
+                     print("   No relevant documents found in the vector store for this query.")
+                     # Decide if you want to proceed without context or stop
+                     print("\nAnswer:")
+                     print("I could not find relevant information in the provided documents to answer this question.")
+                     continue # Skip LLM call if no docs found
+
+                # Display sources of retrieved documents (if metadata exists)
+                print("   Sources found:")
+                sources = set(doc.metadata.get('source', 'Unknown') for doc in retrieved_docs)
+                for source in sources:
+                    print(f"     - {os.path.basename(source)}") # Show just the filename
+
+                # Step 2: Format context
+                print("2. Formatting retrieved documents into context...")
+                formatted_context = format_docs(retrieved_docs)
+                # Optional: Print context length or snippet
+                # print(f"   Context length: {len(formatted_context)} characters")
+
+                # Step 3: Prepare prompt and stream LLM generation
+                print(f"3. Generating answer using LLM '{LLM_MODEL_NAME}' (streaming)...")
+                generation_start_time = time.time()
+
+                # Define the generation part of the chain (same as before)
+                rag_chain_generation = (
+                    prompt
+                    | llm
+                    | output_parser # StrOutputParser handles streaming correctly
+                )
+
+                print("\n--- Streaming LLM Output (including <think> process) ---")
+                # Use stream() and iterate through the chunks
                 try:
-                    query = input("\nYour Question: ")
-                    if query.strip().lower() in ["exit", "quit"]:
-                        print("Exiting...")
-                        break
-                    if query.strip():
-                        print("Thinking...")
-                        start_time = time.time()
-                        # Invoke the RAG chain with the user's query
-                        response = rag_chain.invoke(query)
-                        end_time = time.time()
-                        print(f"\nAnswer (took {end_time - start_time:.2f}s):")
-                        print(response)
-                    else:
-                        print("Please enter a question.")
-                except Exception as e:
-                     print(f"\nAn error occurred during query processing: {e}")
-                     # Optionally add more robust error handling or logging
+                    full_response_content = "" # To potentially store the full response if needed
+                    stream = rag_chain_generation.stream({
+                        "context": formatted_context,
+                        "question": query
+                    })
+                    for chunk in stream:
+                        print(chunk, end="", flush=True)
+                        full_response_content += chunk # Optionally accumulate the full response
+
+                    print() 
+
+                except Exception as stream_error:
+                    print(f"\nAn error occurred during streaming: {stream_error}")
+                    import traceback
+                    traceback.print_exc()
+
+                generation_end_time = time.time()
+                print("\n--- End Streaming LLM Output ---")
+                print(f"   Answer streamed in {generation_end_time - generation_start_time:.2f}s.")
+
+                # Step 4: Display final answer
+                total_end_time = time.time()
+                print("--- End Thinking Process ---")
+                print(f"(Total query time: {total_end_time - start_time:.2f}s)")
+
+            except Exception as e:
+                print(f"\nAn error occurred during query processing: {e}")
+                import traceback
+                traceback.print_exc()
+
     else:
         print("\n--- RAG System Initialization Failed ---")
         print("Could not load or create the vector store.")
