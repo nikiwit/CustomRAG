@@ -131,7 +131,7 @@ def setup_rag_chain(vector_store, llm_model_name):
     # Configure the retriever
     retriever = vector_store.as_retriever(
         search_type="similarity", # Or "mmr" for Max Marginal Relevance
-        search_kwargs={'k': 5} # Retrieve top 5 relevant chunks
+        search_kwargs={'k': 3} # Retrieve top 3 relevant chunks – increase it if want more comprehensive answer and completeness is crucial
     )
 
     # Define the prompt template - Adjust as needed for better responses
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         # 1. Retriever
         retriever = vector_store.as_retriever(
             search_type="similarity",
-            search_kwargs={'k': 5} # Retrieve top 5 relevant chunks
+            search_kwargs={'k': 3} # Retrieve top 3 relevant chunks – increase it if want more comprehensive answer and completeness is crucial
         )
         print(f"Retriever configured (k={retriever.search_kwargs.get('k', 'default')})")
 
