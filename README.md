@@ -1,114 +1,136 @@
-# Custom RAG
+# Custom RAG - Local Question Answering
 
 This project implements a simple Retrieval-Augmented Generation (RAG) system that runs entirely locally on your machine. It uses documents you provide as a knowledge base to answer your questions.
 
 ## Features
 
-* **Local First:** Runs completely offline (after downloading models). No API keys or data sent to external services (unless you change the LLM/Embedding configuration).
-
-* **Custom Knowledge Base:** Simply place your `.txt`, `.md` (and potentially other types like `.pdf` if dependencies are installed) files into the `data` directory.
-
+* **Local First:** Runs completely offline (after downloading models and dependencies). No API keys or data sent to external services (unless you change the LLM/Embedding configuration).
+* **Custom Knowledge Base:** Simply place your documents (e.g., `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, `.epub`) into the `data` directory. Support for specific formats depends on installing optional dependencies.
 * **Open Source Stack:** Built using popular Python libraries:
     * **Orchestration:** LangChain
-    * **LLM:** Ollama (running models like DeepSeek locally)
+    * **LLM:** Ollama (running models like DeepSeek-R1 locally)
     * **Embeddings:** Sentence Transformers (Hugging Face `all-MiniLM-L6-v2`)
     * **Vector Store:** ChromaDB (local persistent storage)
 
 ## Prerequisites
 
-* **Python:** Version 3.8 or higher.
-* **Ollama:** Must be installed and running. Download from [https://ollama.com/](https://ollama.com/).
-* **Git:** For cloning the repository (if applicable).
+* **Python:** Version 3.8 or higher. Download from [https://www.python.org/](https://www.python.org/)
+* **Ollama:** Must be installed and running. Download from [https://ollama.com/](https://ollama.com/)
+* **Git:** For cloning the repository. Download from [https://git-scm.com/](https://git-scm.com/)
 
 ## Installation
 
-1.  **Clone the Repository (if you haven't already):**
+1.  **Clone the Repository:**
+    Open your terminal or command prompt and run:
     ```bash
-    git clone <your-github-repo-url>
+    git clone https://github.com/nikiwit/CustomRAG.git
     cd CustomRAG
     ```
 
 2.  **Create and Activate Python Virtual Environment:**
+    It's highly recommended to use a virtual environment to manage project dependencies.
     ```bash
-    python3 -m venv venv
-    source venv/bin/activate
-    # On Windows use: .\venv\Scripts\activate
+    # Navigate into the project directory (cd CustomRAG) first if you haven't already
+    python -m venv venv # Or use python3 if needed on your system. Feel free to use other names like .venv or RAGenv instead of venv.
     ```
+    Activate the environment:
+    * On **macOS/Linux** (bash/zsh):
+        ```bash
+        source venv/bin/activate
+        ```
+    * On **Windows** (Command Prompt):
+        ```cmd
+        .\venv\Scripts\activate
+        ```
+    * On **Windows** (PowerShell):
+        ```powershell
+        .\venv\Scripts\Activate.ps1
+        ```
+    *(You should see `(venv)` or your chosen environment name at the beginning of your terminal prompt)*
 
 3.  **Install Dependencies:**
+    Install the required Python packages using pip:
     ```bash
     pip install -r requirements.txt
     ```
+    *(This reads the `requirements.txt` file and installs libraries like LangChain, ChromaDB, Sentence-Transformers, and Unstructured with its extras for file parsing)*
 
 4.  **Download the LLM via Ollama:**
-    This project is configured to use `deepseek-r1:8b`. Pull it using:
+    This project is configured by default to use the `deepseek-r1:8b` model. You need to download it using the Ollama command line tool.
     ```bash
     ollama pull deepseek-r1:8b
     ```
-    *(Ensure Ollama is running in the background)*
+    *(Ensure the Ollama application/server is running in the background before executing this command and before running the main application later. See Troubleshooting section)*
 
-    *(Optional: If you want to use a different Ollama model, pull it and update `LLM_MODEL_NAME` in `app.py`)*
+    *(Optional: If you wish to use a different model supported by Ollama, pull the desired model (e.g., `ollama pull llama3`) and update the `LLM_MODEL_NAME` variable within the `app.py` script)*
 
 ## How to Use
 
-1.  **Add Your Documents:** Place your knowledge base files (e.g., `.txt`, `.md`) into the `data/` directory. The system will read these files on its first run (or if the `vector_store/` directory is deleted).
-    * *Note:* If you want PDF support, ensure you have `pypdf` installed (`pip install pypdf`) and uncomment the relevant line in `requirements.txt` if needed. `unstructured` should handle basic types.
+1.  **Add Your Documents:** Place your knowledge base files into the `data/` directory.
+    * Supported formats depend on the installed dependencies specified in `requirements.txt`. The default setup includes support for `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, and `.epub` via the `unstructured` library extras. See `requirements.txt` for details on enabling support for other types if needed.
 
-2.  **Run the Application:**
+2.  **Ensure Ollama is Running:** Before running the script, verify that the Ollama application/server is active in the background. See the "Ollama Not Running / Connection Errors" section under "Notes & Troubleshooting" for details on how to check this.
+
+3.  **Run the Application:**
+    Make sure your virtual environment is activated. Then, run the main script from your terminal:
     ```bash
     python app.py
     ```
+    *(Or use `python3 app.py` if that's how you invoke Python 3 on your system)*
 
-3.  **First Run:** The first time you run the script (or after adding/changing documents and deleting the `vector_store/` directory), it will:
-    * Load the documents from `data/`.
-    * Split them into chunks.
-    * Generate embeddings (this might take some time depending on the number of documents and your CPU/M2 chip).
-    * Create and save a local vector store in the `vector_store/` directory.
+4.  **First Run:** The very first time you run the script (or after adding/changing documents and deleting the `vector_store/` directory), it will perform these steps:
+    * Load all supported documents found in the `data/` directory.
+    * Split the documents' content into smaller text chunks.
+    * Generate numerical embeddings for each chunk (this can take significant time depending on the number/size of documents and your computer's processing power).
+    * Create and save a local vector store containing these embeddings in the `vector_store/` directory. Please be patient during this process.
 
-4.  **Subsequent Runs:** If the `vector_store/` directory exists, the script will load the pre-computed embeddings, making startup much faster.
+5.  **Subsequent Runs:** On future runs, if the `vector_store/` directory exists, the script will load the pre-computed embeddings directly from it, making the startup process much faster.
 
-5.  **Ask Questions:** Once you see the "RAG System Ready..." message, type your questions into the terminal and press Enter.
+6.  **Ask Questions:** Once the script prints the `--- RAG System Ready ---` message, you can type your questions related to the content of your documents into the terminal and press Enter.
 
-6.  **Exit:** Type `exit` or `quit` to stop the application.
+7.  **Exit:** To stop the application, type `exit` or `quit` and press Enter.
 
 ## Folder Structure
 
-```
 CustomRAG/
-├── data/             # <-- PLACE YOUR KNOWLEDGE BASE FILES HERE (.txt, .md, etc.)
-├── vector_store/     # Stores the generated vector embeddings (created automatically)
-├── venv/             # Python virtual environment (if created)
-├── app.py            # Main application script
-├── requirements.txt  # Python dependencies
-└── README.md         # This file
-```
+├── data/             # <-- PLACE YOUR KNOWLEDGE BASE FILES HERE (e.g., .pdf, .docx, .txt)
+├── vector_store/     # Stores the generated vector embeddings (created automatically, ignored by Git)
+├── venv/             # Python virtual environment folder (if named 'venv', ignored by Git)
+├── app.py            # Main application Python script
+├── requirements.txt  # List of Python dependencies to install
+├── .gitignore        # Specifies intentionally untracked files/folders for Git
+└── README.md         # This documentation file
+
+*(Note: Your virtual environment folder might have a different name like `.venv` or `RAGenv`. Ensure your `.gitignore` file lists the name you use)*
 
 ## Notes & Troubleshooting
 
-* **Performance:** Running LLMs locally requires significant RAM and computational power. Performance will vary based on your specific M2 chip (Pro, Max) and available RAM. The `deepseek-r1:8b` model (around 5GB download, 8B parameters) is reasonably balanced, but expect it to use several gigabytes of RAM when loaded and be slower than smaller models or API-based services. Larger models will require more resources.
+* **Performance:** Running Large Language Models (LLMs) locally requires significant RAM (memory) and computational power. Performance will vary based on your computer's hardware specifications (CPU, GPU if used by Ollama, available RAM). The default `deepseek-r1:8b` model (around 5GB download, 8 Billion parameters) is reasonably balanced but typically requires several gigabytes of RAM while running. Expect responses to be slower than cloud-based API services. Larger models will demand more resources.
 
-* **First Run Time:** Generating embeddings (the numerical representation of your documents) for a large number of documents can take a while, potentially several minutes or more depending on the size of your knowledge base and your hardware. Please be patient on the first run or after clearing the `vector_store/`. Subsequent runs that load the existing store will be much faster.
+* **First Run Time:** As mentioned, generating embeddings for many or large documents can take time (potentially several minutes or longer). Subsequent runs are much faster as they load the saved `vector_store/`.
 
-* **Updating Knowledge Base:** If you add, remove, or modify files in the `data/` directory, the existing vector store in `vector_store/` will become outdated. To force the system to re-read your files and rebuild the index with the latest information, you **must delete the entire `vector_store/` directory** and then restart `app.py`.
+* **Updating Knowledge Base:** If you add, remove, or modify files in the `data/` directory, the existing information in `vector_store/` becomes outdated. To include the latest changes in the RAG system's knowledge, you **must delete the entire `vector_store/` directory**. The script will then perform the full re-indexing process on its next run.
 
-* **Ollama Not Running / Connection Errors:** The `app.py` script **requires** the Ollama application to be running in the background because it acts as a server providing access to the `deepseek-r1:8b` model. If `app.py` fails immediately with errors mentioning "connection refused," "could not connect," or similar network issues, it almost certainly means the Ollama server isn't active.
-    * **How to Check if Ollama is Running:**
-        * **Menu Bar (macOS - Easiest):** Look for the Ollama llama icon 🦙 in your Mac's menu bar (usually at the top-right of the screen). If the icon is visible, the server application is running.
-        * **Terminal Command:** Open your Terminal (the same place you run `python app.py`) and type `ollama list`. Press Enter. If the command executes successfully (showing your downloaded models, like `deepseek-r1:8b`, or just an empty list if none are fully downloaded) without any connection errors, then the server is running and accessible. If you get an error like `Error: could not connect to Ollama server`, it is not running or not accessible.
-        * **Activity Monitor (macOS):** You can also open `Activity Monitor` (use Spotlight: `Cmd + Space`, type `Activity Monitor`, press Enter), go to the search bar in the top-right of the window, and type `Ollama`. If you see active `Ollama` processes listed, it is running.
-    * **How to Start Ollama:** If you've confirmed Ollama is not running, simply start the Ollama application. Find it in your `/Applications` folder or search for "Ollama" using Spotlight (`Cmd + Space`) and launch it. This will start the necessary background server and usually make the menu bar icon appear.
+* **Ollama Not Running / Connection Errors:** The `app.py` script needs to connect to the Ollama application running as a background server. If the script fails immediately mentioning "connection refused," "could not connect," or similar network errors, the Ollama server is likely not running or accessible.
+    * **How to Check if Ollama is Running:** The most reliable cross-platform method is to use the Ollama command line in your terminal:
+        ```bash
+        ollama list
+        ```
+        If this command successfully lists your downloaded models (or shows an empty list) without connection errors, the server is running. An error like `Error: could not connect to Ollama server` indicates it's not running.
+    * **How to Start Ollama:** If Ollama isn't running, start the Ollama application using your operating system's standard method (e.g., launching it from your installed applications, using a desktop shortcut, or potentially via the command line on some systems). This should start the background server process.
 
-* **`libmagic` Warning (Optional Enhancement):** You might see a warning like `libmagic is unavailable...`. This comes from the document parsing library (`unstructured`). `libmagic` helps detect file types more accurately based on content, not just extension.
-    * The script **will run fine without it**, typically using file extensions.
-    * **Installation is optional but recommended** for potentially more robust file handling.
+* **`libmagic` Warning (Optional Enhancement):** During document loading, you might see a warning like `libmagic is unavailable...`. This message comes from the `unstructured` parsing library. `libmagic` is a system library that helps detect file types accurately based on their content, which can be more reliable than just using the file extension.
+    * The script **will generally run fine without it**.
+    * **Installation is optional** but can improve robustness.
     * **On macOS:** Install via Homebrew: `brew install libmagic`
-    * **On other OS:** Use your system's package manager (e.g., `apt-get install libmagic1` on Debian/Ubuntu). No `pip install` is needed for this specific warning.
+    * **On Debian/Ubuntu Linux:** Use apt: `sudo apt-get update && sudo apt-get install libmagic1`
+    * **On other systems:** Use your system's package manager to install the `libmagic` library. No `pip install` is usually needed for this specific warning; `unstructured` uses the system library if available.
 
-* **`CropBox missing` Warnings (Informational):** When processing PDFs, you might see multiple warnings like `CropBox missing from /Page, defaulting to MediaBox`.
-    * These indicate the PDF file is missing some optional layout metadata.
-    * The parsing library is informing you it's using a default value (the page's physical size).
-    * These warnings are generally **safe to ignore** and usually don't affect the text extraction. Only investigate further if you find the content retrieved from your PDFs is inaccurate or incomplete.
+* **`CropBox missing` Warnings (Informational):** When processing PDF files, you might see multiple warnings like `CropBox missing from /Page, defaulting to MediaBox`.
+    * These indicate the PDF file is missing some optional layout metadata (the CropBox).
+    * The PDF parsing library is informing you it's using a default value based on the page's physical size (the MediaBox).
+    * These warnings are generally **safe to ignore** and usually don't negatively impact text extraction. Only investigate if you notice problems with the content retrieved from your PDFs.
 
-* **Memory Issues (RAM):** If the `app.py` script crashes unexpectedly, especially when processing many documents or asking complex questions, you might be running out of available RAM. The `deepseek-r1:8b` model itself requires a substantial amount of RAM to load and run inferences. Try closing other memory-intensive applications. If problems persist, you might consider trying a smaller Ollama model (e.g., `phi3:medium` or `llama3:8b`) by changing `LLM_MODEL_NAME` in `app.py` (remember to `ollama pull` the new model first).
+* **Memory Issues (RAM):** If `app.py` crashes, especially during embedding or when answering questions, your system might be running out of RAM. Close other resource-heavy applications. If issues persist, consider using a smaller LLM via Ollama (e.g., `phi3:medium`, `llama3:8b`). Remember to `ollama pull` the new model name and update the `LLM_MODEL_NAME` variable in `app.py`.
 
-* **Dependencies:** Ensure all Python packages listed in `requirements.txt` are correctly installed within your active virtual environment (`venv`). If you encounter `ImportError` messages when running `app.py`, double-check your virtual environment is activated (`source venv/bin/activate`) and try running `pip install -r requirements.txt` again.
+* **Dependencies:** Ensure all Python packages from `requirements.txt` are installed in your *active* virtual environment. If you get `ImportError` (e.g., "ModuleNotFoundError"), double-check that your virtual environment is activated (you should see `(venv)` or similar in your prompt) and try running `pip install -r requirements.txt` again.
