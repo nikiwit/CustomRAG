@@ -1,0 +1,13 @@
+# Virtual Environment
+RAGenv/
+.RAGenv/
+env/
+*.pyc
+__pycache__/
+
+# Vector Store Directory
+vector_store/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,18 @@
+langchain>=0.1.0,<0.2.0
+langchain-community>=0.0.30
+langchain-chroma>=0.1.0
+langchain-huggingface>=0.0.1
+sentence-transformers>=2.6.0
+chromadb>=0.4.20,<0.5.0
+
+# Unstructured handles various file types.
+# Install extras for specific formats:
+# [docx] for .docx (requires python-docx)
+# [pptx] for .pptx (requires python-pptx)
+# [pdf] for .pdf (requires pypdf)
+# Add more extras as needed, e.g., [xlsx] for Excel.
+unstructured[docx,pptx,pdf]>=0.12.0
+
+# Note: Handling older .doc files is complex and might require
+# system-level dependencies like 'libreoffice', which is not included here.
+# This setup focuses on .docx, .pptx, and .pdf.
