@@ -96,19 +96,19 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
 
 CustomRAG/
 
-├── data/ # <-- Place your knowledge base items there (e.g., .pdf, .docx, .txt)
+    ├── data/                # <-- Place your knowledge base items there (e.g., .pdf, .docx, .txt)
 
-├── vector_store/ # Stores the generated vector embeddings (created automatically, ignored by Git)
+    ├── vector_store/        # Stores the generated vector embeddings (created automatically, ignored by Git)
 
-├── venv/ # Python virtual environment folder (if named 'venv', ignored by Git)
+    ├── venv/                # Python virtual environment folder (if named 'venv', ignored by Git)
 
-├── app.py # Main application Python script
+    ├── app.py               # Main application Python script
 
-├── .gitignore # Specifies intentionally untracked files/folders for Git
+    ├── .gitignore           # Specifies intentionally untracked files/folders for Git
 
-├── requirements.txt # List of Python dependencies to install
+    ├── requirements.txt     # List of Python dependencies to install
 
-└── README.md # This file
+    └── README.md            # This file
 
 ```
 
