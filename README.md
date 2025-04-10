@@ -87,7 +87,7 @@ CustomRAG/
 
 * **Performance:** Running LLMs locally requires significant RAM and computational power. Performance will vary based on your specific M2 chip (Pro, Max) and available RAM. The `deepseek-r1:8b` model (around 5GB download, 8B parameters) is reasonably balanced, but expect it to use several gigabytes of RAM when loaded and be slower than smaller models or API-based services. Larger models will require more resources.
 
-* **First Run Time:** Generating embeddings (the numerical representation of your documents) for a large number of documents can take a while, potentially several minutes or more depending on the size of your knowledge base and your Mac's processing power. Please be patient on the first run or after clearing the `vector_store/`. Subsequent runs that load the existing store will be much faster.
+* **First Run Time:** Generating embeddings (the numerical representation of your documents) for a large number of documents can take a while, potentially several minutes or more depending on the size of your knowledge base and your hardware. Please be patient on the first run or after clearing the `vector_store/`. Subsequent runs that load the existing store will be much faster.
 
 * **Updating Knowledge Base:** If you add, remove, or modify files in the `data/` directory, the existing vector store in `vector_store/` will become outdated. To force the system to re-read your files and rebuild the index with the latest information, you **must delete the entire `vector_store/` directory** and then restart `app.py`.
 
@@ -98,6 +98,17 @@ CustomRAG/
         * **Activity Monitor (macOS):** You can also open `Activity Monitor` (use Spotlight: `Cmd + Space`, type `Activity Monitor`, press Enter), go to the search bar in the top-right of the window, and type `Ollama`. If you see active `Ollama` processes listed, it is running.
     * **How to Start Ollama:** If you've confirmed Ollama is not running, simply start the Ollama application. Find it in your `/Applications` folder or search for "Ollama" using Spotlight (`Cmd + Space`) and launch it. This will start the necessary background server and usually make the menu bar icon appear.
 
-* **Memory Issues (RAM):** If the `app.py` script crashes unexpectedly, especially when processing many documents or asking complex questions, you might be running out of available RAM. The `deepseek-r1:8b` model itself requires a substantial amount of RAM to load and run inferences. Try closing other memory-intensive applications. If problems persist, you might consider trying a smaller Ollama model (e.g., `phi3:medium` or `llama3:8b` which might use slightly less RAM than `deepseek-r1:8b` under certain conditions, or even smaller models like `tinyllama`) by changing `LLM_MODEL_NAME` in `app.py` (remember to `ollama pull` the new model first).
+* **`libmagic` Warning (Optional Enhancement):** You might see a warning like `libmagic is unavailable...`. This comes from the document parsing library (`unstructured`). `libmagic` helps detect file types more accurately based on content, not just extension.
+    * The script **will run fine without it**, typically using file extensions.
+    * **Installation is optional but recommended** for potentially more robust file handling.
+    * **On macOS:** Install via Homebrew: `brew install libmagic`
+    * **On other OS:** Use your system's package manager (e.g., `apt-get install libmagic1` on Debian/Ubuntu). No `pip install` is needed for this specific warning.
+
+* **`CropBox missing` Warnings (Informational):** When processing PDFs, you might see multiple warnings like `CropBox missing from /Page, defaulting to MediaBox`.
+    * These indicate the PDF file is missing some optional layout metadata.
+    * The parsing library is informing you it's using a default value (the page's physical size).
+    * These warnings are generally **safe to ignore** and usually don't affect the text extraction. Only investigate further if you find the content retrieved from your PDFs is inaccurate or incomplete.
+
+* **Memory Issues (RAM):** If the `app.py` script crashes unexpectedly, especially when processing many documents or asking complex questions, you might be running out of available RAM. The `deepseek-r1:8b` model itself requires a substantial amount of RAM to load and run inferences. Try closing other memory-intensive applications. If problems persist, you might consider trying a smaller Ollama model (e.g., `phi3:medium` or `llama3:8b`) by changing `LLM_MODEL_NAME` in `app.py` (remember to `ollama pull` the new model first).
 
 * **Dependencies:** Ensure all Python packages listed in `requirements.txt` are correctly installed within your active virtual environment (`venv`). If you encounter `ImportError` messages when running `app.py`, double-check your virtual environment is activated (`source venv/bin/activate`) and try running `pip install -r requirements.txt` again.
