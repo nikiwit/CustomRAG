@@ -12,3 +12,9 @@ vector_store/
 # OS-specific files (Optional but recommended)
 .DS_Store
 Thumbs.db
+
+# Logs
+customrag.log
+
+# ReadMe1
+README1.md

@@ -6,11 +6,14 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
 
 * **Local First:** Runs completely offline (after downloading models and dependencies). No API keys or data sent to external services (unless you change the LLM/Embedding configuration).
 * **Custom Knowledge Base:** Simply place your documents (e.g., `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, `.epub`) into the `data` directory. Support for specific formats depends on installing optional dependencies.
+* **Document Processing:** Automatically handles various file formats, splitting them into appropriate chunks for indexing and retrieval.
+* **Conversation Context:** Maintains conversation memory for follow-up questions.
 * **Open Source Stack:** Built using popular Python libraries:
     * **Orchestration:** LangChain
     * **LLM:** Ollama (running models like DeepSeek-R1 locally)
     * **Embeddings:** Sentence Transformers (Hugging Face `all-MiniLM-L6-v2`)
     * **Vector Store:** ChromaDB (local persistent storage)
+* **GPU Acceleration:** Automatically uses CUDA or MPS (Apple Silicon) when available.
 
 ## Prerequisites
 
@@ -55,6 +58,29 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
     ```
     *(This reads the `requirements.txt` file and installs libraries like LangChain, ChromaDB, Sentence-Transformers, and Unstructured with its extras for file parsing)*
 
+    **Platform-Specific Installation Notes:**
+
+    * **Apple Silicon Macs (M1/M2/M3):** If you encounter build errors related to `onnx` or SSE4.1 instructions:
+        ```bash
+        # Install PyTorch separately first
+        pip install torch
+
+        # Then install the core requirements without building problematic packages
+        pip install --no-deps chromadb
+        pip install pydantic hnswlib typing_extensions overrides
+        pip install langchain langchain-community langchain-chroma langchain-huggingface sentence-transformers requests
+        
+        # Finally install document processing libraries
+        pip install pypdf pdfplumber docx2txt python-docx python-pptx
+        pip install ebooklib beautifulsoup4 lxml tqdm python-dotenv chardet html2text
+        pip install unstructured
+        pip install "unstructured[pptx]" "unstructured[epub]"
+        ```
+
+    * **Windows:** You might need to install additional build tools:
+        1. Install [Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+        2. When installing, select "Desktop development with C++"
+
 4.  **Download the LLM via Ollama:**
     This project is configured by default to use the `deepseek-r1:8b` model. You need to download it using the Ollama command line tool.
     ```bash
@@ -88,31 +114,93 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
 
 6.  **Ask Questions:** Once the script prints the `--- RAG System Ready ---` message, you can type your questions related to the content of your documents into the terminal and press Enter.
 
-7.  **Exit:** To stop the application, type `exit` or `quit` and press Enter.
+7.  **Commands:**
+   * Type `exit` or `quit` to stop the application
+   * Type `clear` to reset the conversation memory
+   * Type `reindex` to reindex all documents
+   * Type `stats` to see document statistics
 
 ## Folder Structure
 
 ```
-
 CustomRAG/
-
     ├── data/                # <-- Place your knowledge base items there (e.g., .pdf, .docx, .txt)
-
     ├── vector_store/        # Stores the generated vector embeddings (created automatically, ignored by Git)
-
     ├── venv/                # Python virtual environment folder (if named 'venv', ignored by Git)
-
     ├── app.py               # Main application Python script
-
     ├── .gitignore           # Specifies intentionally untracked files/folders for Git
-
     ├── requirements.txt     # List of Python dependencies to install
-
     └── README.md            # This file
-
 ```
 
 *(Note: Your virtual environment folder might have a different name like `.venv` or `RAGenv`. Ensure your `.gitignore` file lists the name you use)*
+
+## Document Format Support
+
+The system supports various document formats:
+
+* **Text Files** (`.txt`, `.md`): Basic text files.
+* **PDF Files** (`.pdf`): Using PyPDFLoader or PDFPlumberLoader.
+* **Word Documents** (`.docx`, `.doc`): Using Docx2txtLoader.
+* **PowerPoint Files** (`.ppt`, `.pptx`): Using UnstructuredPowerPointLoader.
+* **EPUB Books** (`.epub`): Using either UnstructuredEPubLoader or a custom loader with ebooklib and html2text.
+
+For EPUB files, the system first tries to use the UnstructuredEPubLoader, and if that fails, it falls back to a custom implementation using ebooklib, BeautifulSoup, and html2text.
+
+## Code Modifications
+
+If you encounter an error about a missing `split_documents` method, add the following method to the `DocumentProcessor` class in `app.py`:
+
+```python
+@staticmethod
+def split_documents(documents: List, chunk_size: int = None, chunk_overlap: int = None) -> List:
+    """
+    Split documents into smaller chunks for better retrieval.
+    
+    Args:
+        documents: List of documents to split
+        chunk_size: Size of each chunk (in characters)
+        chunk_overlap: Overlap between chunks (in characters)
+        
+    Returns:
+        List of document chunks
+    """
+    if not documents:
+        logger.warning("No documents to split")
+        return []
+        
+    if chunk_size is None:
+        chunk_size = Config.CHUNK_SIZE
+        
+    if chunk_overlap is None:
+        chunk_overlap = Config.CHUNK_OVERLAP
+        
+    logger.info(f"Splitting {len(documents)} documents into chunks (size={chunk_size}, overlap={chunk_overlap})")
+    
+    try:
+        # Create text splitter
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+            is_separator_regex=False,
+        )
+        
+        # Split documents
+        chunked_documents = text_splitter.split_documents(documents)
+        
+        # Remove any empty chunks
+        valid_chunks = [chunk for chunk in chunked_documents if chunk.page_content and chunk.page_content.strip()]
+        
+        # Log statistics
+        logger.info(f"Created {len(valid_chunks)} chunks from {len(documents)} documents")
+        
+        return valid_chunks
+        
+    except Exception as e:
+        logger.error(f"Error splitting documents: {e}")
+        return []
+```
 
 ## Notes & Troubleshooting
 
@@ -120,7 +208,9 @@ CustomRAG/
 
 * **First Run Time:** As mentioned, generating embeddings for many or large documents can take time (potentially several minutes or longer). Subsequent runs are much faster as they load the saved `vector_store/`.
 
-* **Updating Knowledge Base:** If you add, remove, or modify files in the `data/` directory, the existing information in `vector_store/` becomes outdated. To include the latest changes in the RAG system's knowledge, you **must delete the entire `vector_store/` directory**. The script will then perform the full re-indexing process on its next run.
+* **Updating Knowledge Base:** If you add, remove, or modify files in the `data/` directory, the existing information in `vector_store/` becomes outdated. To include the latest changes in the RAG system's knowledge, you can either:
+  * Type `reindex` in the application interface to trigger reindexing, or
+  * Delete the entire `vector_store/` directory, and the script will perform the full re-indexing process on its next run.
 
 * **Ollama Not Running / Connection Errors:** The `app.py` script needs to connect to the Ollama application running as a background server. If the script fails immediately mentioning "connection refused," "could not connect," or similar network errors, the Ollama server is likely not running or accessible.
     * **How to Check if Ollama is Running:** The most reliable cross-platform method is to use the Ollama command line in your terminal:
@@ -129,6 +219,12 @@ CustomRAG/
         ```
         If this command successfully lists your downloaded models (or shows an empty list) without connection errors, the server is running. An error like `Error: could not connect to Ollama server` indicates it's not running.
     * **How to Start Ollama:** If Ollama isn't running, start the Ollama application using your operating system's standard method (e.g., launching it from your installed applications, using a desktop shortcut, or potentially via the command line on some systems). This should start the background server process.
+
+* **Installation Issues:**
+  * **Package build errors:** Some packages may fail to build, especially on certain platforms like Apple Silicon. Follow the platform-specific installation instructions in the Installation section.
+  * **Dependency conflicts:** If you encounter dependency conflicts, consider installing dependencies in stages as described in the platform-specific notes.
+  * **PyTorch issues:** If PyTorch is causing problems, install it separately first with `pip install torch` before installing other requirements.
+  * **EPUB support issues:** If you have trouble with EPUB files, make sure you have both `unstructured[epub]` and `html2text` packages installed.
 
 * **`libmagic` Warning (Optional Enhancement):** During document loading, you might see a warning like `libmagic is unavailable...`. This message comes from the `unstructured` parsing library. `libmagic` is a system library that helps detect file types accurately based on their content, which can be more reliable than just using the file extension.
     * The script **will generally run fine without it**.
@@ -145,3 +241,9 @@ CustomRAG/
 * **Memory Issues (RAM):** If `app.py` crashes, especially during embedding or when answering questions, your system might be running out of RAM. Close other resource-heavy applications. If issues persist, consider using a smaller LLM via Ollama (e.g., `phi3:medium`, `llama3:8b`). Remember to `ollama pull` the new model name and update the `LLM_MODEL_NAME` variable in `app.py`.
 
 * **Dependencies:** Ensure all Python packages from `requirements.txt` are installed in your *active* virtual environment. If you get `ImportError` (e.g., "ModuleNotFoundError"), double-check that your virtual environment is activated (you should see `(venv)` or similar in your prompt) and try running `pip install -r requirements.txt` again.
+
+* **Using GPU Acceleration:** The system will automatically detect and use:
+  * CUDA for NVIDIA GPUs
+  * MPS for Apple Silicon Macs
+  
+  No additional configuration is needed as this is handled by the `VectorStoreManager.get_embedding_device()` method.
