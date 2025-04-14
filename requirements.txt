@@ -5,6 +5,15 @@ langchain-huggingface>=0.0.1
 sentence-transformers>=2.6.0
 chromadb>=0.4.20,<0.5.0
 
+# For DOCX file handling using Docx2txtLoader (primary method in updated code)
+docx2txt>=0.8
+
+# For PyTorch (needed for embedding device detection - GPU/MPS/CPU)
+torch>=2.0.0
+
+# For API calls to Ollama
+requests>=2.28.0
+
 # Unstructured handles various file types.
 # Install extras for specific formats:
 # [docx] for .docx (requires python-docx)
