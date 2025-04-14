@@ -11,3 +11,9 @@ vector_store/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# Log
+customrag.log
+
+# ReadMe for the Main branch
+README1.md
