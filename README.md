@@ -147,61 +147,6 @@ The system supports various document formats:
 
 For EPUB files, the system first tries to use the UnstructuredEPubLoader, and if that fails, it falls back to a custom implementation using ebooklib, BeautifulSoup, and html2text.
 
-## Code Modifications
-
-If you encounter an error about a missing `split_documents` method, add the following method to the `DocumentProcessor` class in `app.py`:
-
-```python
-@staticmethod
-def split_documents(documents: List, chunk_size: int = None, chunk_overlap: int = None) -> List:
-    """
-    Split documents into smaller chunks for better retrieval.
-    
-    Args:
-        documents: List of documents to split
-        chunk_size: Size of each chunk (in characters)
-        chunk_overlap: Overlap between chunks (in characters)
-        
-    Returns:
-        List of document chunks
-    """
-    if not documents:
-        logger.warning("No documents to split")
-        return []
-        
-    if chunk_size is None:
-        chunk_size = Config.CHUNK_SIZE
-        
-    if chunk_overlap is None:
-        chunk_overlap = Config.CHUNK_OVERLAP
-        
-    logger.info(f"Splitting {len(documents)} documents into chunks (size={chunk_size}, overlap={chunk_overlap})")
-    
-    try:
-        # Create text splitter
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            length_function=len,
-            is_separator_regex=False,
-        )
-        
-        # Split documents
-        chunked_documents = text_splitter.split_documents(documents)
-        
-        # Remove any empty chunks
-        valid_chunks = [chunk for chunk in chunked_documents if chunk.page_content and chunk.page_content.strip()]
-        
-        # Log statistics
-        logger.info(f"Created {len(valid_chunks)} chunks from {len(documents)} documents")
-        
-        return valid_chunks
-        
-    except Exception as e:
-        logger.error(f"Error splitting documents: {e}")
-        return []
-```
-
 ## Notes & Troubleshooting
 
 * **Performance:** Running Large Language Models (LLMs) locally requires significant RAM (memory) and computational power. Performance will vary based on your computer's hardware specifications (CPU, GPU if used by Ollama, available RAM). The default `deepseek-r1:8b` model (around 5GB download, 8 Billion parameters) is reasonably balanced but typically requires several gigabytes of RAM while running. Expect responses to be slower than cloud-based API services. Larger models will demand more resources.
