@@ -25,7 +25,7 @@ python-pptx>=0.6.21
 ebooklib>=0.18
 beautifulsoup4>=4.11.0
 lxml>=4.9.0
-html2text>=2020.1.16  # Add this line for custom EPUB processing
+html2text>=2020.1.16  
 
 # Utilities
 tqdm>=4.66.0
@@ -36,5 +36,5 @@ chardet>=5.0.0
 # If these cause issues during installation, they can be commented out
 # and installed manually if needed
 unstructured>=0.10.0
-unstructured[epub]>=0.10.0  # Add this line for better EPUB support
+unstructured[epub]>=0.10.0 
 # unstructured[pptx]>=0.10.0
