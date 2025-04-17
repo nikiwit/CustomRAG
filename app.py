@@ -1,15 +1,18 @@
 """
-CustomRAG - A Retrieval Augmented Generation System for Local Document Q&A
---------------------------------------------------------------------------
+CustomRAG - An Advanced Retrieval Augmented Generation System for Local Document Q&A
+----------------------------------------------------------------------------------
 This application allows users to query their own document collection using 
 natural language. It supports various document formats including PDF, DOCX, 
-TXT, and PowerPoint files.
+TXT, PowerPoint, and EPUB files.
 
 Features:
 - Document embedding and vector storage using ChromaDB
-- Semantic search with similarity matching
+- Multi-strategy retrieval with hybrid search capabilities
+- Advanced query processing and classification
+- Smart context generation with dynamic prioritization
+- Template-based response generation with citations
 - Support for multiple file formats
-- Conversation memory for contextual follow-up questions
+- Conversation memory with context awareness
 - GPU acceleration when available (CUDA/MPS)
 
 Author: Nik
@@ -25,9 +28,36 @@ import torch
 import sys
 import json
 import re
-from typing import List, Dict, Any, Optional, Union
+import random
+import math
+import numpy as np
+from typing import List, Dict, Any, Optional, Union, Tuple, Set
 from pathlib import Path
+from collections import Counter, defaultdict
+from enum import Enum
+from datetime import datetime
 from chromadb.config import Settings
+
+# NLP imports
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer, PorterStemmer
+from nltk.util import ngrams
+
+# Ensure NLTK resources are available
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet', quiet=True)
 
 # EPUB processing imports
 import html2text
@@ -39,7 +69,7 @@ from langchain_community.document_loaders.base import BaseLoader
 from langchain_community.document_loaders import (
     PyPDFLoader, Docx2txtLoader, TextLoader, UnstructuredPowerPointLoader, UnstructuredEPubLoader
 )
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
 
 # Vector store and embedding imports
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -47,7 +77,7 @@ from langchain_chroma import Chroma
 
 # LLM and prompt imports
 from langchain_community.llms import Ollama
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.memory import ConversationBufferMemory
@@ -79,10 +109,23 @@ class Config:
     # Embedding and retrieval settings
     EMBEDDING_MODEL_NAME = os.environ.get("CUSTOMRAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     LLM_MODEL_NAME = os.environ.get("CUSTOMRAG_LLM_MODEL", "deepseek-r1:8b")
+    
+    # Chunking settings
     CHUNK_SIZE = int(os.environ.get("CUSTOMRAG_CHUNK_SIZE", "500"))
     CHUNK_OVERLAP = int(os.environ.get("CUSTOMRAG_CHUNK_OVERLAP", "150"))
+    
+    # Retrieval settings
     RETRIEVER_K = int(os.environ.get("CUSTOMRAG_RETRIEVER_K", "10"))
-    RETRIEVER_SEARCH_TYPE = os.environ.get("CUSTOMRAG_SEARCH_TYPE", "mmr")
+    RETRIEVER_SEARCH_TYPE = os.environ.get("CUSTOMRAG_SEARCH_TYPE", "hybrid")  # Changed to hybrid as default
+    KEYWORD_RATIO = float(os.environ.get("CUSTOMRAG_KEYWORD_RATIO", "0.3"))  # 30% weight to keywords by default
+    
+    # Query processing settings
+    USE_QUERY_EXPANSION = os.environ.get("CUSTOMRAG_QUERY_EXPANSION", "True").lower() in ("true", "1", "t")
+    EXPANSION_FACTOR = int(os.environ.get("CUSTOMRAG_EXPANSION_FACTOR", "3"))
+    
+    # Context processing settings
+    MAX_CONTEXT_SIZE = int(os.environ.get("CUSTOMRAG_MAX_CONTEXT_SIZE", "4000"))
+    USE_CONTEXT_COMPRESSION = os.environ.get("CUSTOMRAG_CONTEXT_COMPRESSION", "True").lower() in ("true", "1", "t")
     
     # Ollama API
     OLLAMA_BASE_URL = os.environ.get("CUSTOMRAG_OLLAMA_URL", "http://localhost:11434")
@@ -108,74 +151,1260 @@ class Config:
         logger.info(f"Vector store directory: {cls.PERSIST_PATH}")
         logger.info(f"Embedding model: {cls.EMBEDDING_MODEL_NAME}")
         logger.info(f"LLM model: {cls.LLM_MODEL_NAME}")
+        logger.info(f"Search type: {cls.RETRIEVER_SEARCH_TYPE}")
+        
+        if cls.RETRIEVER_SEARCH_TYPE == "hybrid":
+            logger.info(f"Keyword ratio: {cls.KEYWORD_RATIO}")
+        
+        if cls.USE_QUERY_EXPANSION:
+            logger.info(f"Query expansion enabled with factor: {cls.EXPANSION_FACTOR}")
+            
+        if cls.USE_CONTEXT_COMPRESSION:
+            logger.info(f"Context compression enabled")
 
 #############################################################################
-# CONVERSATION HANDLING
+# ENUMS AND TYPES
 #############################################################################
 
-class ConversationPatterns:
-    """Patterns for detecting and responding to conversation elements."""
+class QueryType(Enum):
+    """Enum for different types of queries."""
+    FACTUAL = "factual"           # Asking for specific facts
+    PROCEDURAL = "procedural"     # How to do something
+    CONCEPTUAL = "conceptual"     # Understanding concepts
+    EXPLORATORY = "exploratory"   # Open-ended exploration
+    COMPARATIVE = "comparative"   # Comparing things
+    CONVERSATIONAL = "conversational"  # Social conversation
+    COMMAND = "command"           # System commands
+    UNKNOWN = "unknown"           # Unclassified
+
+class DocumentRelevance(Enum):
+    """Enum for document relevance levels."""
+    HIGH = "high"       # Directly relevant
+    MEDIUM = "medium"   # Somewhat relevant
+    LOW = "low"         # Tangentially relevant
+    NONE = "none"       # Not relevant
+
+class RetrievalStrategy(Enum):
+    """Enum for retrieval strategies."""
+    SEMANTIC = "semantic"         # Semantic similarity search
+    KEYWORD = "keyword"           # Keyword-based search
+    HYBRID = "hybrid"             # Combined semantic and keyword
+    MMR = "mmr"                   # Maximum Marginal Relevance for diversity
+
+#############################################################################
+# 1. INPUT PROCESSING
+#############################################################################
+
+class InputProcessor:
+    """Processes user input to enhance retrieval quality."""
     
-    # Greeting patterns and responses
-    GREETING_PATTERNS = [
-        r'\b(?:hi|hello|hey|greetings|howdy|good\s*(?:morning|afternoon|evening)|what\'s\s*up)\b',
-        r'\bhow\s+are\s+you\b',
-    ]
-
-    GREETING_RESPONSES = [
-        "Hello! I'm your document assistant. How can I help you with your documents today?",
-        "Hi there! I'm ready to help answer questions about your documents. What would you like to know?",
-        "Greetings! I'm here to assist with information from your documents. What are you looking for?",
-    ]
-
-    # Farewell patterns
-    FAREWELL_PATTERNS = [
-        r'\b(?:bye|goodbye|see\s*you|farewell|exit|quit)\b',
-    ]
-
-    # Acknowledgement patterns and responses
-    ACKNOWLEDGEMENT_PATTERNS = [
-        r'\b(?:thanks|thank\s*you)\b',
-        r'\bappreciate\s*(?:it|that)\b',
-        r'\b(?:awesome|great|cool|nice)\b',
-        r'\bthat\s*(?:helps|helped)\b',
-        r'\bgot\s*it\b',
-    ]
-
-    ACKNOWLEDGEMENT_RESPONSES = [
-        "You're welcome! Is there anything else you'd like to know about your documents?",
-        "Happy to help! Let me know if you have any other questions.",
-        "My pleasure! Feel free to ask if you need anything else.",
-        "Glad I could assist. Any other questions about your documents?",
-    ]
-
-    @classmethod
-    def detect_conversation_type(cls, query: str) -> Optional[str]:
+    def __init__(self):
+        """Initialize the input processor with NLP components."""
+        self.stemmer = PorterStemmer()
+        self.lemmatizer = WordNetLemmatizer()
+        self.stop_words = set(stopwords.words('english'))
+        
+        # Load common synonyms (simplified version)
+        self.synonyms = {
+            "document": ["file", "text", "paper", "doc", "content"],
+            "find": ["locate", "search", "discover", "retrieve", "get"],
+            "explain": ["describe", "clarify", "elaborate", "detail", "elucidate"],
+            "show": ["display", "present", "exhibit", "demonstrate"],
+            "information": ["info", "data", "details", "facts", "knowledge"],
+            "create": ["make", "generate", "produce", "build", "develop"],
+            "modify": ["change", "alter", "adjust", "edit", "update"],
+            "remove": ["delete", "eliminate", "erase", "take out"],
+            "important": ["significant", "essential", "critical", "key", "vital"],
+            "problem": ["issue", "challenge", "difficulty", "trouble", "obstacle"],
+            "solution": ["answer", "resolution", "fix", "remedy", "workaround"],
+        }
+    
+    def normalize_query(self, query: str) -> str:
         """
-        Detects if input is a greeting, acknowledgement, or farewell.
-        Returns an appropriate response or None.
+        Normalize query by converting to lowercase, removing punctuation,
+        and standardizing whitespace.
+        """
+        # Convert to lowercase
+        normalized = query.lower()
+        
+        # Remove punctuation except apostrophes in contractions
+        normalized = re.sub(r'[^\w\s\']', ' ', normalized)
+        
+        # Replace multiple spaces with a single space
+        normalized = re.sub(r'\s+', ' ', normalized)
+        
+        return normalized.strip()
+    
+    def analyze_query(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze the query to extract features for better retrieval.
+        
+        Returns:
+            A dictionary with query analysis including:
+            - tokens: List of tokens
+            - normalized_query: Normalized query text
+            - lemmatized_tokens: Lemmatized tokens
+            - keywords: Key terms (non-stopwords)
+            - query_type: Type of query (enum)
+            - expanded_queries: List of expanded query variants
+        """
+        # Normalize the query
+        normalized_query = self.normalize_query(query)
+        
+        # Tokenize
+        tokens = word_tokenize(normalized_query)
+        
+        # Remove stopwords and get keywords
+        keywords = [token for token in tokens if token.lower() not in self.stop_words and len(token) > 1]
+        
+        # Lemmatize tokens
+        lemmatized_tokens = [self.lemmatizer.lemmatize(token) for token in tokens]
+        
+        # Generate n-grams for phrases (bigrams and trigrams)
+        bigrams = list(ngrams(tokens, 2))
+        trigrams = list(ngrams(tokens, 3))
+        
+        # Extract bigram and trigram phrases
+        bigram_phrases = [' '.join(bg) for bg in bigrams]
+        trigram_phrases = [' '.join(tg) for tg in trigrams]
+        
+        # Identify query type
+        query_type = self.classify_query_type(normalized_query, tokens)
+        
+        # Generate expanded queries if enabled
+        expanded_queries = []
+        if Config.USE_QUERY_EXPANSION:
+            expanded_queries = self.expand_query(normalized_query, keywords)
+        
+        return {
+            "original_query": query,
+            "normalized_query": normalized_query,
+            "tokens": tokens,
+            "keywords": keywords,
+            "lemmatized_tokens": lemmatized_tokens,
+            "bigram_phrases": bigram_phrases,
+            "trigram_phrases": trigram_phrases,
+            "query_type": query_type,
+            "expanded_queries": expanded_queries
+        }
+    
+    def classify_query_type(self, query: str, tokens: List[str]) -> QueryType:
+        """
+        Classify the query into different types.
+        """
+        # Check for command queries first
+        command_patterns = [
+            r'\b(?:exit|quit|bye|goodbye)\b',
+            r'\bclear\b',
+            r'\breindex\b',
+            r'\bstats\b',
+            r'\bhelp\b'
+        ]
+        
+        for pattern in command_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.COMMAND
+        
+        # Check for conversational queries
+        conversational_patterns = [
+            r'\b(?:hi|hello|hey|greetings|howdy|good\s*(?:morning|afternoon|evening)|what\'s\s*up)\b',
+            r'\bhow\s+are\s+you\b',
+            r'\b(?:thanks|thank\s*you)\b',
+            r'\bappreciate\s*(?:it|that)\b',
+        ]
+        
+        for pattern in conversational_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.CONVERSATIONAL
+        
+        # Check for factual queries
+        factual_patterns = [
+            r'\bwhat\s+is\b',
+            r'\bwhat\s+are\b',
+            r'\bwho\s+is\b',
+            r'\bwhen\s+\w+\b',
+            r'\bwhere\s+\w+\b',
+            r'\blist\b',
+            r'\bdefine\b',
+            r'\btell\s+me\s+about\b'
+        ]
+        
+        for pattern in factual_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.FACTUAL
+        
+        # Check for procedural queries
+        procedural_patterns = [
+            r'\bhow\s+to\b',
+            r'\bhow\s+do\s+I\b',
+            r'\bhow\s+can\s+I\b',
+            r'\bsteps\s+to\b',
+            r'\bguide\b',
+            r'\btutorial\b',
+            r'\bprocedure\b',
+            r'\bprocess\b'
+        ]
+        
+        for pattern in procedural_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.PROCEDURAL
+        
+        # Check for conceptual queries
+        conceptual_patterns = [
+            r'\bexplain\b',
+            r'\bconcept\b',
+            r'\btheory\b',
+            r'\bwhy\s+\w+\b',
+            r'\breasons?\s+for\b',
+            r'\bmean\b',
+            r'\bunderstand\b'
+        ]
+        
+        for pattern in conceptual_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.CONCEPTUAL
+        
+        # Check for comparative queries
+        comparative_patterns = [
+            r'\bcompare\b',
+            r'\bcontrast\b',
+            r'\bdifference\b',
+            r'\bsimilar\b',
+            r'\bversus\b',
+            r'\bvs\b',
+            r'\bbetter\b',
+            r'\badvantages?\b',
+            r'\bdisadvantages?\b'
+        ]
+        
+        for pattern in comparative_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.COMPARATIVE
+        
+        # Check for exploratory queries
+        exploratory_patterns = [
+            r'\btell\s+me\s+more\b',
+            r'\blearn\s+about\b',
+            r'\bdiscover\b',
+            r'\bexplore\b',
+            r'\boverview\b',
+            r'\bintroduction\b'
+        ]
+        
+        for pattern in exploratory_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return QueryType.EXPLORATORY
+        
+        # Default to unknown if no patterns match
+        return QueryType.UNKNOWN
+    
+    def expand_query(self, query: str, keywords: List[str]) -> List[str]:
+        """
+        Expand the query with synonyms and variations.
+        
+        Returns:
+            List of expanded query strings
+        """
+        expanded_queries = [query]  # Start with the original query
+        
+        # Skip expansion for very short queries or conversational queries
+        if len(keywords) < 2:
+            return expanded_queries
+        
+        # Expand using synonyms
+        for i, keyword in enumerate(keywords):
+            if keyword in self.synonyms:
+                for synonym in self.synonyms[keyword][:Config.EXPANSION_FACTOR]:
+                    # Replace the keyword with its synonym
+                    new_keywords = keywords.copy()
+                    new_keywords[i] = synonym
+                    expanded_query = ' '.join(new_keywords)
+                    if expanded_query not in expanded_queries:
+                        expanded_queries.append(expanded_query)
+        
+        # If we haven't generated enough variations, try some combinations
+        if len(expanded_queries) < Config.EXPANSION_FACTOR and len(keywords) >= 3:
+            # Generate variations by removing one non-essential keyword at a time
+            for i in range(len(keywords)):
+                variation = ' '.join(keywords[:i] + keywords[i+1:])
+                if variation not in expanded_queries:
+                    expanded_queries.append(variation)
+                
+                # Stop if we have enough variations
+                if len(expanded_queries) >= Config.EXPANSION_FACTOR:
+                    break
+        
+        return expanded_queries[:Config.EXPANSION_FACTOR]  # Limit to avoid too many variations
+
+#############################################################################
+# 2. QUERY ROUTING & CLASSIFICATION
+#############################################################################
+
+class QueryRouter:
+    """Routes queries to appropriate handlers based on query type."""
+    
+    def __init__(self, conversation_handler, retrieval_handler, command_handler):
+        """Initialize with handlers for different query types."""
+        self.conversation_handler = conversation_handler
+        self.retrieval_handler = retrieval_handler
+        self.command_handler = command_handler
+    
+    def route_query(self, query_analysis: Dict[str, Any]) -> Tuple[Any, bool]:
+        """
+        Route the query to the appropriate handler.
+        
+        Args:
+            query_analysis: Analysis output from InputProcessor
+            
+        Returns:
+            Tuple of (handler_result, should_continue)
+        """
+        query_type = query_analysis["query_type"]
+        original_query = query_analysis["original_query"]
+        
+        # Route based on query type
+        if query_type == QueryType.COMMAND:
+            # Handle system commands
+            return self.command_handler.handle_command(original_query)
+        
+        elif query_type == QueryType.CONVERSATIONAL:
+            # Handle conversational queries
+            response = self.conversation_handler.handle_conversation(original_query)
+            return response, True
+        
+        else:
+            # Handle all other query types with retrieval system
+            response = self.retrieval_handler.process_query(query_analysis)
+            return response, True
+
+class ConversationHandler:
+    """Handles conversational queries that don't require document retrieval."""
+    
+    def __init__(self, memory):
+        """Initialize with a memory for conversation history."""
+        self.memory = memory
+        
+        # Greeting patterns and responses
+        self.greeting_patterns = [
+            r'\b(?:hi|hello|hey|greetings|howdy|good\s*(?:morning|afternoon|evening)|what\'s\s*up)\b',
+            r'\bhow\s+are\s+you\b',
+        ]
+
+        self.greeting_responses = [
+            "Hello! I'm your document assistant. How can I help you with your documents today?",
+            "Hi there! I'm ready to help answer questions about your documents. What would you like to know?",
+            "Greetings! I'm here to assist with information from your documents. What are you looking for?",
+            "Hello! I'm your RAG assistant. I can help you find information in your document collection.",
+            "Hi! I'm ready to search your documents. What would you like to learn about?"
+        ]
+
+        # Acknowledgement patterns and responses
+        self.acknowledgement_patterns = [
+            r'\b(?:thanks|thank\s*you)\b',
+            r'\bappreciate\s*(?:it|that)\b',
+            r'\b(?:awesome|great|cool|nice)\b',
+            r'\bthat\s*(?:helps|helped)\b',
+            r'\bgot\s*it\b',
+        ]
+
+        self.acknowledgement_responses = [
+            "You're welcome! Is there anything else you'd like to know about your documents?",
+            "Happy to help! Let me know if you have any other questions.",
+            "My pleasure! Feel free to ask if you need anything else.",
+            "Glad I could assist. Any other questions about your documents?",
+            "You're welcome! I'm here if you need more information from your documents."
+        ]
+    
+    def handle_conversation(self, query: str) -> str:
+        """
+        Handles conversational queries.
+        
+        Args:
+            query: The user's query
+            
+        Returns:
+            Appropriate conversational response
         """
         query_lower = query.lower().strip()
-
+        response = None
+        
         # Check for greetings
-        for pattern in cls.GREETING_PATTERNS:
+        for pattern in self.greeting_patterns:
             if re.search(pattern, query_lower, re.IGNORECASE):
-                import random
-                return random.choice(cls.GREETING_RESPONSES)
-
+                response = random.choice(self.greeting_responses)
+                break
+        
         # Check for acknowledgements
-        for pattern in cls.ACKNOWLEDGEMENT_PATTERNS:
-            if re.search(pattern, query_lower, re.IGNORECASE):
-                import random
-                return random.choice(cls.ACKNOWLEDGEMENT_RESPONSES)
+        if not response:
+            for pattern in self.acknowledgement_patterns:
+                if re.search(pattern, query_lower, re.IGNORECASE):
+                    response = random.choice(self.acknowledgement_responses)
+                    break
+        
+        # If no specific pattern matched, give a generic response
+        if not response:
+            response = "I'm here to help you with your documents. What would you like to know?"
+        
+        # Update conversation memory
+        self.memory.chat_memory.add_user_message(query)
+        self.memory.chat_memory.add_ai_message(response)
+        
+        return response
 
-        # Check for farewells (handled by main loop)
-        for pattern in cls.FAREWELL_PATTERNS:
-            if re.search(pattern, query_lower, re.IGNORECASE):
-                return None
+class CommandHandler:
+    """Handles system commands."""
+    
+    def __init__(self, rag_system):
+        """Initialize with a reference to the RAG system."""
+        self.rag_system = rag_system
+    
+    def handle_command(self, command: str) -> Tuple[str, bool]:
+        """
+        Handles system commands.
+        
+        Args:
+            command: The command string
+            
+        Returns:
+            Tuple of (response, should_continue)
+        """
+        command_lower = command.lower().strip()
+        
+        # Help command
+        if command_lower in ["help", "menu", "commands"]:
+            help_text = """
+            Available Commands:
+            - help: Display this help menu
+            - exit, quit: Stop the application
+            - clear: Reset the conversation memory
+            - reindex: Reindex all documents
+            - stats: See document statistics
+            """
+            return help_text, True
+        
+        # Exit commands
+        elif command_lower in ["exit", "quit", "bye", "goodbye"]:
+            return "Goodbye! Have a great day!", False
+            
+        # Clear memory command
+        elif command_lower == "clear":
+            # Reset memory but keep system message
+            system_message = self.rag_system.memory.chat_memory.messages[0] if self.rag_system.memory.chat_memory.messages else None
+            self.rag_system.memory.clear()
+            if system_message:
+                self.rag_system.memory.chat_memory.messages.append(system_message)
+            return "Conversation memory has been reset.", True
+            
+        # Stats command
+        elif command_lower == "stats":
+            # Capture printed output
+            import io
+            from contextlib import redirect_stdout
+            
+            f = io.StringIO()
+            with redirect_stdout(f):
+                VectorStoreManager.print_document_statistics(self.rag_system.vector_store)
+            
+            output = f.getvalue()
+            if not output.strip():
+                output = "No document statistics available."
+                
+            return output, True
+            
+        # Reindex command
+        elif command_lower == "reindex":
+            result = self.rag_system.reindex_documents()
+            if result:
+                return "Documents have been successfully reindexed.", True
+            else:
+                return "Failed to reindex documents. Check the log for details.", True
+        
+        # Unknown command
+        else:
+            return f"Unknown command: {command}. Type 'help' to see available commands.", True
 
-        # Not a special conversation type
-        return None
+#############################################################################
+# 3. RETRIEVAL SYSTEM
+#############################################################################
+
+class RetrievalHandler:
+    """Handles document retrieval using multiple strategies."""
+    
+    def __init__(self, vector_store, embeddings, memory, context_processor):
+        """Initialize the retrieval handler."""
+        self.vector_store = vector_store
+        self.embeddings = embeddings
+        self.memory = memory
+        self.context_processor = context_processor
+        
+        # Create retrievers for different strategies
+        self.retrievers = self._create_retrievers()
+    
+    def _create_retrievers(self) -> Dict[RetrievalStrategy, Any]:
+        """Create retrievers for different strategies."""
+        retrievers = {}
+        
+        # Semantic search retriever
+        retrievers[RetrievalStrategy.SEMANTIC] = self.vector_store.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": Config.RETRIEVER_K}
+        )
+        
+        # MMR retriever for diversity
+        retrievers[RetrievalStrategy.MMR] = self.vector_store.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": Config.RETRIEVER_K,
+                "fetch_k": Config.RETRIEVER_K * 3,
+                "lambda_mult": 0.5
+            }
+        )
+        
+        # For keyword and hybrid search, we'll implement custom methods
+        
+        return retrievers
+    
+    def process_query(self, query_analysis: Dict[str, Any]) -> str:
+        """
+        Process a query using the appropriate retrieval strategy.
+        
+        Args:
+            query_analysis: The analysis from InputProcessor
+            
+        Returns:
+            Response string
+        """
+        query_type = query_analysis["query_type"]
+        original_query = query_analysis["original_query"]
+        expanded_queries = query_analysis.get("expanded_queries", [original_query])
+        
+        logger.info(f"Processing {query_type.value} query: {original_query}")
+        
+        # Select retrieval strategy based on query type
+        retrieval_strategy = self._select_retrieval_strategy(query_type)
+        logger.info(f"Selected retrieval strategy: {retrieval_strategy.value}")
+        
+        # Retrieve relevant documents
+        context_docs = self._retrieve_documents(expanded_queries, retrieval_strategy)
+        
+        # If no documents found, try a fallback strategy
+        if not context_docs and retrieval_strategy != RetrievalStrategy.HYBRID:
+            logger.info("No documents found, trying hybrid fallback strategy")
+            context_docs = self._retrieve_documents(expanded_queries, RetrievalStrategy.HYBRID)
+        
+        # Process the retrieved documents
+        context = self.context_processor.process_context(context_docs, query_analysis)
+        
+        # Generate response using RAG system
+        input_dict = {
+            "question": original_query,
+            "context": context,
+            "chat_history": self.memory.chat_memory.messages
+        }
+        
+        # Generate response through LLM
+        response = RAGSystem.stream_ollama_response(self._create_prompt(input_dict), Config.LLM_MODEL_NAME)
+        
+        # Update memory
+        self.memory.chat_memory.add_user_message(original_query)
+        self.memory.chat_memory.add_ai_message(response)
+        
+        return response
+    
+    def _select_retrieval_strategy(self, query_type: QueryType) -> RetrievalStrategy:
+        """
+        Select the appropriate retrieval strategy based on query type.
+        """
+        if Config.RETRIEVER_SEARCH_TYPE != "auto":
+            # Use the configured strategy if not set to auto
+            return RetrievalStrategy(Config.RETRIEVER_SEARCH_TYPE)
+        
+        # Select strategy based on query type
+        if query_type == QueryType.FACTUAL:
+            return RetrievalStrategy.HYBRID  # Precise for factual questions
+        
+        elif query_type == QueryType.PROCEDURAL:
+            return RetrievalStrategy.SEMANTIC  # Procedures need semantic understanding
+        
+        elif query_type == QueryType.COMPARATIVE:
+            return RetrievalStrategy.MMR  # Diverse results for comparison
+        
+        elif query_type == QueryType.EXPLORATORY:
+            return RetrievalStrategy.MMR  # Diverse results for exploration
+        
+        else:
+            return RetrievalStrategy.HYBRID  # Default to hybrid
+    
+    def _retrieve_documents(self, queries: List[str], strategy: RetrievalStrategy) -> List[Document]:
+        """
+        Retrieve documents using the specified strategy.
+        
+        Args:
+            queries: List of query strings (original and expanded)
+            strategy: Retrieval strategy to use
+            
+        Returns:
+            List of retrieved documents
+        """
+        all_docs = []
+        seen_ids = set()  # Track document IDs to avoid duplicates
+        
+        # Process each query (original + expanded)
+        for query in queries:
+            try:
+                if strategy == RetrievalStrategy.SEMANTIC or strategy == RetrievalStrategy.MMR:
+                    # Use the appropriate retriever
+                    docs = self.retrievers[strategy].invoke(query)
+                    
+                elif strategy == RetrievalStrategy.KEYWORD:
+                    # Use keyword-based retrieval
+                    docs = self._keyword_retrieval(query)
+                    
+                elif strategy == RetrievalStrategy.HYBRID:
+                    # Use hybrid retrieval (combination of semantic and keyword)
+                    docs = self._hybrid_retrieval(query)
+                
+                # Add unique documents to the result list
+                for doc in docs:
+                    # Create a unique ID based on content and source
+                    doc_id = f"{doc.metadata.get('source', '')}-{hash(doc.page_content[:100])}"
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        all_docs.append(doc)
+            
+            except Exception as e:
+                logger.error(f"Error retrieving documents for query '{query}': {e}")
+        
+        # Sort docs by relevance score if available
+        all_docs = self._rerank_documents(all_docs, queries[0])
+        
+        logger.info(f"Retrieved {len(all_docs)} unique documents")
+        return all_docs
+    
+    def _keyword_retrieval(self, query: str) -> List[Document]:
+        """
+        Perform keyword-based retrieval.
+        
+        Args:
+            query: Query string
+            
+        Returns:
+            List of documents
+        """
+        # Get all documents from the vector store
+        all_docs = self.vector_store.get()
+        
+        if not all_docs or not all_docs.get('documents'):
+            return []
+            
+        documents = all_docs.get('documents', [])
+        metadatas = all_docs.get('metadatas', [])
+        ids = all_docs.get('ids', [])
+        
+        # Extract keywords from the query
+        tokens = word_tokenize(query.lower())
+        stop_words = set(stopwords.words('english'))
+        keywords = [token for token in tokens if token not in stop_words and len(token) > 2]
+        
+        # Score documents based on keyword matches
+        scored_docs = []
+        for i, doc_text in enumerate(documents):
+            if not doc_text:
+                continue
+                
+            score = 0
+            doc_lower = doc_text.lower()
+            
+            # Count exact keyword matches
+            for keyword in keywords:
+                # Count occurrences of the keyword
+                count = doc_lower.count(keyword)
+                score += count
+                
+                # Bonus for exact phrase match
+                if query.lower() in doc_lower:
+                    score += 10
+            
+            if score > 0:
+                metadata = metadatas[i] if i < len(metadatas) else {}
+                doc_id = ids[i] if i < len(ids) else str(i)
+                
+                # Create Document object
+                doc = Document(
+                    page_content=doc_text,
+                    metadata={
+                        **metadata,
+                        'score': score,
+                        'id': doc_id
+                    }
+                )
+                scored_docs.append((score, doc))
+        
+        # Sort by score (descending) and return top k
+        scored_docs.sort(reverse=True, key=lambda x: x[0])
+        
+        # Extract just the documents from the scored list
+        result_docs = [doc for _, doc in scored_docs[:Config.RETRIEVER_K]]
+        
+        return result_docs
+    
+    def _hybrid_retrieval(self, query: str) -> List[Document]:
+        """
+        Perform hybrid retrieval (semantic + keyword).
+        
+        Args:
+            query: Query string
+            
+        Returns:
+            List of documents
+        """
+        # Get semantic search results
+        semantic_docs = self.retrievers[RetrievalStrategy.SEMANTIC].invoke(query)
+        
+        # Get keyword search results
+        keyword_docs = self._keyword_retrieval(query)
+        
+        # Combine results with weighting
+        semantic_weight = 1 - Config.KEYWORD_RATIO
+        keyword_weight = Config.KEYWORD_RATIO
+        
+        # Track documents by ID to avoid duplicates
+        combined_docs = {}
+        
+        # Add semantic docs with their weights
+        for i, doc in enumerate(semantic_docs):
+            doc_id = f"{doc.metadata.get('source', '')}-{hash(doc.page_content[:100])}"
+            
+            # Inverse rank scoring (higher rank = lower score)
+            semantic_score = semantic_weight * (1.0 - (i / len(semantic_docs)))
+            
+            # Store with score
+            combined_docs[doc_id] = {
+                "doc": doc,
+                "score": semantic_score
+            }
+        
+        # Add keyword docs with their weights
+        for i, doc in enumerate(keyword_docs):
+            doc_id = f"{doc.metadata.get('source', '')}-{hash(doc.page_content[:100])}"
+            
+            # Get original keyword score if available, otherwise use inverse rank
+            keyword_score = (doc.metadata.get('score', 0) / max(1, max([d.metadata.get('score', 1) for d in keyword_docs])))
+            
+            # Adjust by weight
+            keyword_score = keyword_weight * keyword_score
+            
+            # Update score if document already exists, otherwise add it
+            if doc_id in combined_docs:
+                combined_docs[doc_id]["score"] += keyword_score
+            else:
+                combined_docs[doc_id] = {
+                    "doc": doc,
+                    "score": keyword_score
+                }
+        
+        # Sort by combined score
+        sorted_docs = sorted(combined_docs.values(), key=lambda x: x["score"], reverse=True)
+        
+        # Return top K documents
+        result_docs = [item["doc"] for item in sorted_docs[:Config.RETRIEVER_K]]
+        
+        return result_docs
+    
+    def _rerank_documents(self, documents: List[Document], query: str) -> List[Document]:
+        """
+        Rerank documents based on relevance to the query.
+        
+        Args:
+            documents: List of documents to rerank
+            query: Original query string
+            
+        Returns:
+            Reranked document list
+        """
+        if not documents:
+            return []
+        
+        # Embed the query
+        try:
+            query_embedding = self.embeddings.embed_query(query)
+            
+            # Score each document
+            scored_docs = []
+            for doc in documents:
+                # Try to get precomputed embedding if available
+                doc_embedding = None
+                if hasattr(doc, 'embedding') and doc.embedding is not None:
+                    doc_embedding = doc.embedding
+                else:
+                    # Compute embedding
+                    doc_embedding = self.embeddings.embed_query(doc.page_content)
+                
+                # Calculate cosine similarity
+                similarity = self._cosine_similarity(query_embedding, doc_embedding)
+                
+                # Get keyword score if available
+                keyword_score = doc.metadata.get('score', 0)
+                
+                # Combine scores (weighted average)
+                combined_score = (similarity * 0.7) + (keyword_score * 0.3)
+                
+                scored_docs.append((combined_score, doc))
+            
+            # Sort by score (descending)
+            scored_docs.sort(reverse=True, key=lambda x: x[0])
+            
+            # Return reranked documents
+            return [doc for _, doc in scored_docs]
+            
+        except Exception as e:
+            logger.error(f"Error reranking documents: {e}")
+            return documents  # Return original order if reranking fails
+    
+    def _cosine_similarity(self, vec1, vec2):
+        """Calculate cosine similarity between two vectors."""
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        norm_a = math.sqrt(sum(a * a for a in vec1))
+        norm_b = math.sqrt(sum(b * b for b in vec2))
+        
+        if norm_a == 0 or norm_b == 0:
+            return 0
+            
+        return dot_product / (norm_a * norm_b)
+    
+    def _create_prompt(self, input_dict):
+        """
+        Create a prompt for the LLM based on query type.
+        
+        Args:
+            input_dict: Dictionary with question, context, and chat history
+            
+        Returns:
+            Formatted prompt string
+        """
+        template = """
+        You are a helpful AI assistant answering questions about a collection of documents. 
+        You have access to information contained in these documents, and you'll answer 
+        questions about their content accurately and precisely.
+
+        Guidelines for your responses:
+        1. If you find the answer in the documents, respond directly and cite your sources with specific filenames
+        2. If the documents contain partial information, use it and make clear where your information comes from
+        3. If the question is about general knowledge unrelated to the documents, you can answer it like a normal conversation
+        4. If you cannot find specific information in the documents, say "I don't have specific information about that in the documents" rather than making up information
+        5. Always use specific information from the documents when available instead of giving generic answers
+        6. If asked about a specific document or file by name, focus on information from that file and mention clearly whether that file is in your knowledge base
+        7. Provide concise, direct answers that address the question's specific intent
+        8. When citing information, mention the document name in a natural way, such as "According to [document name]..."
+
+        Context from retrieved documents:
+        {context}
+
+        Chat History:
+        {chat_history}
+
+        Question: {question}
+
+        Helpful Answer:
+        """
+        
+        # Format chat history
+        chat_history = ""
+        for message in input_dict["chat_history"]:
+            if isinstance(message, HumanMessage):
+                chat_history += f"Human: {message.content}\n"
+            elif isinstance(message, AIMessage):
+                chat_history += f"AI: {message.content}\n"
+        
+        # Fill in the template
+        prompt = template.format(
+            context=input_dict["context"],
+            chat_history=chat_history,
+            question=input_dict["question"]
+        )
+        
+        return prompt
+
+#############################################################################
+# 4. CONTEXT PROCESSING
+#############################################################################
+
+class ContextProcessor:
+    """Processes retrieved documents into a coherent context for the LLM."""
+    
+    def __init__(self):
+        """Initialize the context processor."""
+        self.max_context_size = Config.MAX_CONTEXT_SIZE
+        self.use_compression = Config.USE_CONTEXT_COMPRESSION
+    
+    def process_context(self, documents: List[Document], query_analysis: Dict[str, Any]) -> str:
+        """
+        Process retrieved documents into a coherent context.
+        
+        Args:
+            documents: List of retrieved documents
+            query_analysis: Analysis of the query
+            
+        Returns:
+            Formatted context string
+        """
+        if not documents:
+            return "No relevant documents found."
+        
+        # Get query elements
+        query_type = query_analysis["query_type"]
+        keywords = query_analysis["keywords"]
+        
+        # Score and prioritize documents
+        scored_docs = self._score_documents(documents, keywords, query_type)
+        
+        # Select documents to include based on priority and size constraints
+        selected_docs = self._select_documents(scored_docs)
+        
+        # Format the selected documents
+        formatted_context = self._format_documents(selected_docs)
+        
+        return formatted_context
+    
+    def _score_documents(self, documents: List[Document], keywords: List[str], query_type: QueryType) -> List[Tuple[Document, float, DocumentRelevance]]:
+        """
+        Score documents based on relevance to the query.
+        
+        Args:
+            documents: List of documents
+            keywords: List of query keywords
+            query_type: Type of query
+            
+        Returns:
+            List of tuples (document, score, relevance_level)
+        """
+        scored_docs = []
+        
+        for doc in documents:
+            # Start with base score (if available in metadata)
+            base_score = doc.metadata.get('score', 0.5)
+            
+            # Adjust score based on keyword matches
+            keyword_score = 0
+            content_lower = doc.page_content.lower()
+            
+            for keyword in keywords:
+                if keyword.lower() in content_lower:
+                    # Count occurrences
+                    count = content_lower.count(keyword.lower())
+                    keyword_score += min(count / 10.0, 0.5)  # Cap at 0.5
+            
+            # Consider document length (prefer medium-sized chunks)
+            length = len(doc.page_content)
+            length_score = 0
+            if 200 <= length <= 1000:
+                length_score = 0.2  # Prefer medium chunks
+            elif length > 1000:
+                length_score = 0.1  # Long chunks are okay
+            else:
+                length_score = 0  # Short chunks less preferred
+            
+            # Adjust score based on query type and document content
+            type_score = 0
+            
+            if query_type == QueryType.FACTUAL:
+                # For factual queries, prefer documents with data, numbers, definitions
+                if re.search(r'\b(?:defined?|mean|refer|is a|are a|definition)\b', content_lower):
+                    type_score += 0.3
+                if re.search(r'\d+', content_lower):
+                    type_score += 0.2
+                    
+            elif query_type == QueryType.PROCEDURAL:
+                # For procedural queries, prefer step-by-step content
+                if re.search(r'\b(?:step|procedure|process|how to|guide|instruction)\b', content_lower):
+                    type_score += 0.3
+                if re.search(r'\b(?:first|second|third|next|then|finally)\b', content_lower):
+                    type_score += 0.3
+                    
+            elif query_type == QueryType.CONCEPTUAL:
+                # For conceptual queries, prefer explanations
+                if re.search(r'\b(?:concept|theory|explanation|principle|understand|because)\b', content_lower):
+                    type_score += 0.3
+                    
+            elif query_type == QueryType.COMPARATIVE:
+                # For comparative queries, prefer content with comparisons
+                if re.search(r'\b(?:compare|contrast|versus|vs|difference|similarity|advantage|disadvantage)\b', content_lower):
+                    type_score += 0.4
+            
+            # Combine scores
+            combined_score = (base_score * 0.4) + (keyword_score * 0.3) + (length_score * 0.1) + (type_score * 0.2)
+            
+            # Determine relevance level
+            relevance = DocumentRelevance.MEDIUM  # Default
+            if combined_score > 0.7:
+                relevance = DocumentRelevance.HIGH
+            elif combined_score < 0.3:
+                relevance = DocumentRelevance.LOW
+            
+            scored_docs.append((doc, combined_score, relevance))
+        
+        # Sort by score (descending)
+        scored_docs.sort(key=lambda x: x[1], reverse=True)
+        
+        return scored_docs
+    
+    def _select_documents(self, scored_docs: List[Tuple[Document, float, DocumentRelevance]]) -> List[Tuple[Document, DocumentRelevance]]:
+        """
+        Select documents to include in the context based on priority and size constraints.
+        
+        Args:
+            scored_docs: List of scored documents
+            
+        Returns:
+            List of selected documents with their relevance level
+        """
+        selected_docs = []
+        current_size = 0
+        
+        # First, include HIGH relevance documents
+        for doc, score, relevance in scored_docs:
+            if relevance == DocumentRelevance.HIGH:
+                doc_size = len(doc.page_content)
+                
+                # Skip if this single document is too large
+                if doc_size > self.max_context_size:
+                    # Try to compress if enabled
+                    if self.use_compression:
+                        compressed_content = self._compress_document(doc.page_content)
+                        if len(compressed_content) <= self.max_context_size:
+                            # Create a new document with compressed content
+                            compressed_doc = Document(
+                                page_content=compressed_content,
+                                metadata=doc.metadata
+                            )
+                            selected_docs.append((compressed_doc, relevance))
+                            current_size += len(compressed_content)
+                    continue
+                
+                # Check if adding this document would exceed the limit
+                if current_size + doc_size <= self.max_context_size:
+                    selected_docs.append((doc, relevance))
+                    current_size += doc_size
+                else:
+                    # Try compression if enabled
+                    if self.use_compression:
+                        compressed_content = self._compress_document(doc.page_content)
+                        if current_size + len(compressed_content) <= self.max_context_size:
+                            # Create a new document with compressed content
+                            compressed_doc = Document(
+                                page_content=compressed_content,
+                                metadata=doc.metadata
+                            )
+                            selected_docs.append((compressed_doc, relevance))
+                            current_size += len(compressed_content)
+        
+        # Then include MEDIUM relevance documents if space allows
+        for doc, score, relevance in scored_docs:
+            if relevance == DocumentRelevance.MEDIUM:
+                doc_size = len(doc.page_content)
+                
+                # Check if adding this document would exceed the limit
+                if current_size + doc_size <= self.max_context_size:
+                    selected_docs.append((doc, relevance))
+                    current_size += doc_size
+                elif self.use_compression:
+                    # Try compression
+                    compressed_content = self._compress_document(doc.page_content)
+                    if current_size + len(compressed_content) <= self.max_context_size:
+                        # Create a new document with compressed content
+                        compressed_doc = Document(
+                            page_content=compressed_content,
+                            metadata=doc.metadata
+                        )
+                        selected_docs.append((compressed_doc, relevance))
+                        current_size += len(compressed_content)
+        
+        # Finally, include LOW relevance documents if there's still space
+        if current_size < self.max_context_size * 0.8:  # Only if we have significant space left
+            for doc, score, relevance in scored_docs:
+                if relevance == DocumentRelevance.LOW:
+                    doc_size = len(doc.page_content)
+                    
+                    # Check if adding this document would exceed the limit
+                    if current_size + doc_size <= self.max_context_size:
+                        selected_docs.append((doc, relevance))
+                        current_size += doc_size
+                    elif self.use_compression and current_size < self.max_context_size * 0.9:
+                        # Try compression for low-relevance docs only if we have enough space
+                        compressed_content = self._compress_document(doc.page_content)
+                        if current_size + len(compressed_content) <= self.max_context_size:
+                            # Create a new document with compressed content
+                            compressed_doc = Document(
+                                page_content=compressed_content,
+                                metadata=doc.metadata
+                            )
+                            selected_docs.append((compressed_doc, relevance))
+                            current_size += len(compressed_content)
+        
+        logger.info(f"Selected {len(selected_docs)} documents for context (size: {current_size}/{self.max_context_size})")
+        return selected_docs
+    
+    def _compress_document(self, content: str) -> str:
+        """
+        Compress document content to fit in context window.
+        
+        Args:
+            content: Document content to compress
+            
+        Returns:
+            Compressed content
+        """
+        # Simple compression by removing extra whitespace
+        compressed = re.sub(r'\s+', ' ', content).strip()
+        
+        # If still too long, try more aggressive compression
+        if len(compressed) > self.max_context_size / 2:
+            # Remove common filler phrases
+            filler_phrases = [
+                r'in order to',
+                r'as a matter of fact',
+                r'for the most part',
+                r'for all intents and purposes',
+                r'with regard to',
+                r'in the event that',
+                r'due to the fact that',
+                r'in spite of the fact that',
+                r'in the process of',
+            ]
+            
+            for phrase in filler_phrases:
+                # Replace with shorter alternatives
+                if phrase == r'in order to':
+                    compressed = re.sub(phrase, 'to', compressed)
+                elif phrase == r'due to the fact that':
+                    compressed = re.sub(phrase, 'because', compressed)
+                elif phrase == r'in spite of the fact that':
+                    compressed = re.sub(phrase, 'although', compressed)
+                else:
+                    # Remove other filler phrases
+                    compressed = re.sub(phrase, '', compressed)
+            
+            # Replace repeated information if present
+            # This is a simplistic approach; in a real system you might use
+            # more sophisticated NLP to identify repetition
+            sentences = re.split(r'(?<=[.!?])\s+', compressed)
+            
+            if len(sentences) > 5:
+                # Check for similar sentences and remove duplicates
+                unique_sentences = []
+                sentence_fingerprints = set()
+                
+                for sentence in sentences:
+                    # Create a simple fingerprint of the sentence
+                    words = re.findall(r'\b\w+\b', sentence.lower())
+                    if len(words) > 3:  # Only consider substantive sentences
+                        fingerprint = ' '.join(sorted(words)[:5])  # Use first 5 sorted words as fingerprint
+                        
+                        # Keep sentence if fingerprint is unique
+                        if fingerprint not in sentence_fingerprints:
+                            sentence_fingerprints.add(fingerprint)
+                            unique_sentences.append(sentence)
+                    else:
+                        # Always keep short sentences
+                        unique_sentences.append(sentence)
+                
+                compressed = ' '.join(unique_sentences)
+        
+        # If still too long, truncate while preserving important parts
+        if len(compressed) > self.max_context_size / 2:
+            # Keep first and last parts as they're often most informative
+            half_size = int(self.max_context_size / 4)
+            compressed = f"{compressed[:half_size]} [...] {compressed[-half_size:]}"
+        
+        return compressed
+    
+    def _format_documents(self, selected_docs: List[Tuple[Document, DocumentRelevance]]) -> str:
+        """
+        Format the selected documents into a coherent context.
+        
+        Args:
+            selected_docs: List of selected documents with relevance
+            
+        Returns:
+            Formatted context string
+        """
+        if not selected_docs:
+            return "No relevant documents found."
+            
+        formatted_docs = []
+        unique_filenames = set()
+        
+        # Group documents by relevance
+        high_docs = []
+        medium_docs = []
+        low_docs = []
+        
+        for doc, relevance in selected_docs:
+            if relevance == DocumentRelevance.HIGH:
+                high_docs.append(doc)
+            elif relevance == DocumentRelevance.MEDIUM:
+                medium_docs.append(doc)
+            else:
+                low_docs.append(doc)
+            
+            # Track unique filenames
+            filename = doc.metadata.get('filename', os.path.basename(doc.metadata.get('source', 'Unknown')))
+            unique_filenames.add(filename)
+        
+        # Add a summary of documents
+        doc_count = len(selected_docs)
+        file_count = len(unique_filenames)
+        file_list = ', '.join(sorted(unique_filenames))
+        
+        summary = f"Retrieved {doc_count} relevant text segments from {file_count} document(s): {file_list}\n\n"
+        formatted_docs.append(summary)
+        
+        # Add high relevance documents with clear formatting
+        if high_docs:
+            formatted_docs.append("--- HIGHLY RELEVANT INFORMATION ---")
+            
+            for i, doc in enumerate(high_docs):
+                source = doc.metadata.get('source', 'Unknown source')
+                filename = doc.metadata.get('filename', os.path.basename(source) if source != 'Unknown source' else 'Unknown file')
+                
+                # Include metadata if available
+                page_info = f"page {doc.metadata.get('page', '')}" if doc.metadata.get('page', '') else ""
+                
+                metadata_line = f"Document {i+1} (from {filename} {page_info}):\n"
+                formatted_text = f"{metadata_line}{doc.page_content}\n\n"
+                formatted_docs.append(formatted_text)
+        
+        # Add medium relevance documents
+        if medium_docs:
+            formatted_docs.append("--- ADDITIONAL RELEVANT INFORMATION ---")
+            
+            for i, doc in enumerate(medium_docs):
+                source = doc.metadata.get('source', 'Unknown source')
+                filename = doc.metadata.get('filename', os.path.basename(source) if source != 'Unknown source' else 'Unknown file')
+                
+                # Include metadata if available
+                page_info = f"page {doc.metadata.get('page', '')}" if doc.metadata.get('page', '') else ""
+                
+                metadata_line = f"Document {i+1+len(high_docs)} (from {filename} {page_info}):\n"
+                formatted_text = f"{metadata_line}{doc.page_content}\n\n"
+                formatted_docs.append(formatted_text)
+        
+        # Add low relevance documents
+        if low_docs:
+            formatted_docs.append("--- SUPPLEMENTARY INFORMATION ---")
+            
+            for i, doc in enumerate(low_docs):
+                source = doc.metadata.get('source', 'Unknown source')
+                filename = doc.metadata.get('filename', os.path.basename(source) if source != 'Unknown source' else 'Unknown file')
+                
+                # Include metadata if available
+                page_info = f"page {doc.metadata.get('page', '')}" if doc.metadata.get('page', '') else ""
+                
+                metadata_line = f"Document {i+1+len(high_docs)+len(medium_docs)} (from {filename} {page_info}):\n"
+                formatted_text = f"{metadata_line}{doc.page_content}\n\n"
+                formatted_docs.append(formatted_text)
+        
+        return "\n".join(formatted_docs)
 
 #############################################################################
 # DOCUMENT PROCESSING
@@ -198,6 +1427,16 @@ class DocumentProcessor:
             import pypdf
         except ImportError:
             missing_deps.append("pypdf (for PDF files)")
+        
+        try:
+            import html2text
+        except ImportError:
+            missing_deps.append("html2text (for EPUB files)")
+        
+        try:
+            import bs4
+        except ImportError:
+            missing_deps.append("beautifulsoup4 (for EPUB files)")
         
         if missing_deps:
             logger.warning(f"Missing dependencies: {', '.join(missing_deps)}")
@@ -244,7 +1483,7 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"Error creating loader for {file_path}: {str(e)}")
             return None
-        
+    
     @classmethod
     def load_documents(cls, path: str, extensions: List[str] = None) -> List:
         """
@@ -287,6 +1526,12 @@ class DocumentProcessor:
                                     doc.metadata = {}
                                 doc.metadata['source'] = file_path
                                 doc.metadata['filename'] = os.path.basename(file_path)
+                                
+                                # Add timestamp for sorting by recency if needed
+                                try:
+                                    doc.metadata['timestamp'] = os.path.getmtime(file_path)
+                                except:
+                                    doc.metadata['timestamp'] = 0
 
                             all_documents.extend(docs)
                             logger.info(f"Loaded {len(docs)} sections from {os.path.basename(file_path)}")
@@ -606,6 +1851,19 @@ class VectorStoreManager:
             for filename, count in sorted(doc_counts.items()):
                 print(f"  - {filename}: {count} chunks")
                 
+            # Print most recent additions if timestamp is available
+            recent_docs = []
+            for i, metadata in enumerate(all_metadata):
+                if metadata and 'timestamp' in metadata:
+                    recent_docs.append((metadata['timestamp'], metadata.get('filename', 'Unknown')))
+            
+            if recent_docs:
+                recent_docs.sort(reverse=True)
+                print("\nMost recently added documents:")
+                for i, (timestamp, filename) in enumerate(recent_docs[:5]):
+                    date_str = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"  {i+1}. {filename} (added: {date_str})")
+                
         except Exception as e:
             logger.error(f"Error getting document statistics: {e}")
     
@@ -634,7 +1892,7 @@ class VectorStoreManager:
             return False
 
 #############################################################################
-# RAG SYSTEM
+# 5. RESPONSE GENERATION
 #############################################################################
 
 class RAGSystem:
@@ -711,7 +1969,7 @@ class RAGSystem:
                             if 'response' in json_line:
                                 token = json_line['response']
                                 full_response += token
-                                print(token, end='', flush=True)
+                                # print(token, end='', flush=True) # Uncomment for real-time streaming
 
                             if json_line.get('done', False):
                                 break
@@ -720,119 +1978,8 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"Error during Ollama request: {e}")
             return f"Error: {str(e)}"
-
-        print()  # Add newline at end
+        # print () # Uncomment for real-time streaming newline
         return full_response
-    
-    @classmethod
-    def setup_rag_chain(cls, vector_store, llm_model=None, retriever_k=None, search_type=None):
-        """Set up the RAG chain with vector store, embeddings, and LLM."""
-        if vector_store is None:
-            logger.error("Vector store is not initialized")
-            return None, None, None
-            
-        if llm_model is None:
-            llm_model = Config.LLM_MODEL_NAME
-            
-        if retriever_k is None:
-            retriever_k = Config.RETRIEVER_K
-            
-        if search_type is None:
-            search_type = Config.RETRIEVER_SEARCH_TYPE
-
-        # Configure retriever
-        retriever_kwargs = {'k': retriever_k}
-        if search_type == "mmr":
-            # For MMR (Maximum Marginal Relevance), fetch more candidates then diversify
-            retriever_kwargs['fetch_k'] = retriever_k * 3
-            retriever_kwargs['lambda_mult'] = 0.5  # Balance between relevance and diversity
-
-        retriever = vector_store.as_retriever(
-            search_type=search_type,
-            search_kwargs=retriever_kwargs
-        )
-
-        # Create prompt template
-        template = """
-        You are a helpful AI assistant answering questions about a collection of documents. You have access to information contained in these documents, and you'll answer questions about their content.
-
-        Guidelines for your responses:
-        1. If you find the answer in the documents, respond directly and cite your sources with specific filenames
-        2. If the documents contain partial information, use it and make clear where your information comes from
-        3. If the question is about general knowledge unrelated to the documents, you can answer it like a normal conversation
-        4. If the question is a greeting or casual conversation, respond naturally as a friendly assistant
-        5. If you cannot find specific information in the documents, say "I don't have specific information about that in the documents" rather than making up information
-        6. Always use specific information from the documents when available instead of giving generic answers
-        7. If asked about a specific document or file by name, focus on information from that file and mention clearly whether that file is in your knowledge base
-
-        Important: For this query, I've retrieved multiple document chunks that might contain relevant information. These chunks represent only a small subset of all indexed documents - I have access to many more documents than just these chunks.
-
-        Context from retrieved documents:
-        {context}
-
-        Chat History:
-        {chat_history}
-
-        Question: {question}
-
-        Helpful Answer:
-        """
-        prompt = ChatPromptTemplate.from_template(template)
-
-        # Initialize LLM
-        llm = Ollama(model=llm_model)
-
-        # Create conversation memory
-        memory = ConversationBufferMemory(
-            return_messages=True,
-            memory_key="chat_history"
-        )
-
-        # Add a system message to memory
-        system_message = SystemMessage(content="I am an AI assistant that helps with answering questions about documents. I can also engage in casual conversation.")
-        memory.chat_memory.messages.append(system_message)
-
-        # Create the RAG chain function
-        def rag_chain(input_dict, stream=True):
-            question = input_dict.get("question", "")
-
-            # Detection of social conversation is handled at a higher level
-
-            # Retrieve relevant document chunks
-            try:
-                context_docs = retriever.invoke(question)
-                context = cls.format_docs(context_docs)
-                logger.info(f"Retrieved {len(context_docs)} chunks for query")
-            except Exception as e:
-                logger.error(f"Error retrieving documents: {e}")
-                context = "Error retrieving relevant documents."
-
-            # Format chat history
-            chat_history = input_dict.get("chat_history", [])
-            formatted_history = ""
-            for message in chat_history:
-                if isinstance(message, HumanMessage):
-                    formatted_history += f"Human: {message.content}\n"
-                elif isinstance(message, AIMessage):
-                    formatted_history += f"AI: {message.content}\n"
-
-            # Generate prompt with context and history
-            prompt_input = {
-                "context": context,
-                "chat_history": formatted_history,
-                "question": question
-            }
-            chain_response = prompt.invoke(prompt_input).to_string()
-
-            # Generate response
-            if stream:
-                response = cls.stream_ollama_response(chain_response, llm_model)
-                return response
-            else:
-                response = llm.invoke(chain_response)
-                return response
-
-        return rag_chain, retriever, memory
 
 #############################################################################
 # MAIN APPLICATION
@@ -844,10 +1991,15 @@ class CustomRAG:
     def __init__(self):
         """Initialize the RAG application."""
         self.vector_store = None
-        self.rag_chain = None
-        self.retriever = None
+        self.embeddings = None
         self.memory = None
-        
+        self.input_processor = None
+        self.context_processor = None
+        self.retrieval_handler = None
+        self.conversation_handler = None
+        self.command_handler = None
+        self.query_router = None
+    
     def initialize(self):
         """Set up all components of the RAG system."""
         # Setup configuration
@@ -855,6 +2007,20 @@ class CustomRAG:
         
         # Check dependencies
         DocumentProcessor.check_dependencies()
+        
+        # Initialize components
+        self.input_processor = InputProcessor()
+        self.context_processor = ContextProcessor()
+        
+        # Create memory
+        self.memory = ConversationBufferMemory(
+            return_messages=True,
+            memory_key="chat_history"
+        )
+        
+        # Add a system message to memory
+        system_message = SystemMessage(content="I am an AI assistant that helps with answering questions about documents. I can also engage in casual conversation.")
+        self.memory.chat_memory.messages.append(system_message)
         
         # Create embeddings
         try:
@@ -896,13 +2062,18 @@ class CustomRAG:
         if not self.vector_store:
             logger.error("Failed to initialize vector store")
             return False
-            
-        # Set up RAG chain
-        self.rag_chain, self.retriever, self.memory = RAGSystem.setup_rag_chain(self.vector_store)
         
-        if not self.rag_chain:
-            logger.error("Failed to set up RAG chain")
-            return False
+        # Initialize handlers
+        self.conversation_handler = ConversationHandler(self.memory)
+        self.retrieval_handler = RetrievalHandler(self.vector_store, self.embeddings, self.memory, self.context_processor)
+        self.command_handler = CommandHandler(self)
+        
+        # Initialize query router
+        self.query_router = QueryRouter(
+            self.conversation_handler,
+            self.retrieval_handler,
+            self.command_handler
+        )
             
         return True
     
@@ -921,7 +2092,6 @@ class CustomRAG:
                             self.vector_store._collection._client.close()
                 
                 self.vector_store = None
-                self.retriever = None
                 
                 # Force garbage collection
                 import gc
@@ -960,12 +2130,15 @@ class CustomRAG:
             # Print statistics
             VectorStoreManager.print_document_statistics(self.vector_store)
             
-            # Set up RAG chain
-            self.rag_chain, self.retriever, self.memory = RAGSystem.setup_rag_chain(self.vector_store)
+            # Reinitialize retrieval handler with new vector store
+            self.retrieval_handler = RetrievalHandler(self.vector_store, self.embeddings, self.memory, self.context_processor)
             
-            if not self.rag_chain:
-                logger.error("Failed to set up RAG chain")
-                return False
+            # Update query router with new retrieval handler
+            self.query_router = QueryRouter(
+                self.conversation_handler,
+                self.retrieval_handler,
+                self.command_handler
+            )
                 
             print(f"Reindexing completed successfully! Added {len(chunks)} chunks to the vector store.")
             return True
@@ -982,10 +2155,11 @@ class CustomRAG:
             
         # Print banner and instructions
         print("\n" + "="*60)
-        print("📚 CustomRAG - Document Assistant 📚")
+        print("📚 CustomRAG - Advanced Document Assistant 📚")
         print("="*60)
-        print("Ask questions about your documents.")
+        print("Ask questions about your documents using natural language.")
         print("Commands:")
+        print("  - Type 'help' to see available commands")
         print("  - Type 'exit' or 'quit' to stop")
         print("  - Type 'clear' to reset the conversation memory")
         print("  - Type 'reindex' to reindex all documents")
@@ -1001,56 +2175,23 @@ class CustomRAG:
                     print("Please enter a question.")
                     continue
                 
-                # Handle commands
-                if query.lower() in ["exit", "quit", "bye", "goodbye"]:
-                    print("Goodbye! Have a great day!")
-                    break
-                    
-                if query.lower() == "clear":
-                    # Reset memory but keep system message
-                    system_message = self.memory.chat_memory.messages[0] if self.memory.chat_memory.messages else None
-                    self.memory.clear()
-                    if system_message:
-                        self.memory.chat_memory.messages.append(system_message)
-                    print("Conversation memory has been reset.")
-                    continue
-                    
-                if query.lower() == "stats":
-                    VectorStoreManager.print_document_statistics(self.vector_store)
-                    continue
-                    
-                if query.lower() == "reindex":
-                    self.reindex_documents()
-                    continue
-                
                 # Process query
                 start_time = time.time()
-                
-                # Add query to memory
-                self.memory.chat_memory.add_user_message(query)
                 
                 print("\nThinking...\n")
                 
                 try:
-                    # Check for social responses first (greetings, thanks, etc.)
-                    social_response = ConversationPatterns.detect_conversation_type(query)
-                    if social_response:
-                        # Handle social messages directly
-                        print(f"Response: {social_response}")
-                        self.memory.chat_memory.add_ai_message(social_response)
-                    else:
-                        # Process with RAG pipeline
-                        input_dict = {
-                            "question": query,
-                            "chat_history": self.memory.chat_memory.messages
-                        }
-                        
-                        # Get response
-                        response = self.rag_chain(input_dict)
+                    # Process and route query
+                    query_analysis = self.input_processor.analyze_query(query)
+                    
+                    # Route the query to appropriate handler
+                    response, should_continue = self.query_router.route_query(query_analysis)
+                    
+                    if response:
                         print(f"Response: {response}")
-                        
-                        # Add to memory
-                        self.memory.chat_memory.add_ai_message(response)
+                    
+                    if not should_continue:
+                        break
                         
                 except Exception as e:
                     logger.error(f"Error processing query: {e}")

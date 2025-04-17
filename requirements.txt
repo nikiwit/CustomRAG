@@ -7,6 +7,9 @@ langchain-huggingface>=0.0.1
 sentence-transformers>=2.2.2
 requests>=2.28.0
 
+# NLP libraries
+nltk>=3.8.1
+
 # Vector store - handled separately from torch to avoid conflicts
 chromadb>=0.4.20,<0.5.0
 
@@ -25,16 +28,17 @@ python-pptx>=0.6.21
 ebooklib>=0.18
 beautifulsoup4>=4.11.0
 lxml>=4.9.0
-html2text>=2020.1.16  # Add this line for custom EPUB processing
+html2text>=2020.1.16  
 
 # Utilities
 tqdm>=4.66.0
 python-dotenv>=1.0.0
 chardet>=5.0.0
+numpy>=1.24.0
 
 # Optional enhanced document processing
 # If these cause issues during installation, they can be commented out
 # and installed manually if needed
 unstructured>=0.10.0
-unstructured[epub]>=0.10.0  # Add this line for better EPUB support
+unstructured[epub]>=0.10.0 
 # unstructured[pptx]>=0.10.0
