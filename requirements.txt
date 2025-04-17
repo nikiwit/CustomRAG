@@ -1,28 +1,44 @@
+# Core dependencies
+torch>=2.0.0
 langchain>=0.1.0,<0.2.0
 langchain-community>=0.0.30
 langchain-chroma>=0.1.0
 langchain-huggingface>=0.0.1
-sentence-transformers>=2.6.0
-chromadb>=0.4.20,<0.5.0
-
-# For DOCX file handling using Docx2txtLoader (primary method in updated code)
-docx2txt>=0.8
-
-# For PyTorch (needed for embedding device detection - GPU/MPS/CPU)
-torch>=2.0.0
-
-# For API calls to Ollama
+sentence-transformers>=2.2.2
 requests>=2.28.0
 
-# Unstructured handles various file types.
-# Install extras for specific formats:
-# [docx] for .docx (requires python-docx)
-# [pptx] for .pptx (requires python-pptx)
-# [pdf] for .pdf (requires pypdf)
-# [epub] for .epub (requires beautifulsoup4, lxml)
-# Add more extras as needed, e.g., [xlsx] for Excel.
-unstructured[docx,pptx,pdf,epub]>=0.12.0
+# NLP libraries
+nltk>=3.8.1
 
-# Note: Handling older .doc files is complex and might require
-# system-level dependencies like 'libreoffice', which is not included here.
-# This setup focuses on .docx, .pptx, .pdf, and .epub.
+# Vector store - handled separately from torch to avoid conflicts
+chromadb>=0.4.20,<0.5.0
+
+# Document processing - PDF
+pypdf>=3.0.0
+pdfplumber>=0.10.0
+
+# Document processing - Word
+docx2txt>=0.8
+python-docx>=0.8.11
+
+# Document processing - PowerPoint
+python-pptx>=0.6.21
+
+# Document processing - EPUB
+ebooklib>=0.18
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+html2text>=2020.1.16  
+
+# Utilities
+tqdm>=4.66.0
+python-dotenv>=1.0.0
+chardet>=5.0.0
+numpy>=1.24.0
+
+# Optional enhanced document processing
+# If these cause issues during installation, they can be commented out
+# and installed manually if needed
+unstructured>=0.10.0
+unstructured[epub]>=0.10.0 
+# unstructured[pptx]>=0.10.0
