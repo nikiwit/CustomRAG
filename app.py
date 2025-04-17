@@ -1851,7 +1851,7 @@ class VectorStoreManager:
             for filename, count in sorted(doc_counts.items()):
                 print(f"  - {filename}: {count} chunks")
                 
-            # Print most recent additions if timestamp is available
+            # Print only the most recently added document if timestamp is available
             recent_docs = []
             for i, metadata in enumerate(all_metadata):
                 if metadata and 'timestamp' in metadata:
@@ -1859,10 +1859,10 @@ class VectorStoreManager:
             
             if recent_docs:
                 recent_docs.sort(reverse=True)
-                print("\nMost recently added documents:")
-                for i, (timestamp, filename) in enumerate(recent_docs[:5]):
-                    date_str = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"  {i+1}. {filename} (added: {date_str})")
+                # Get only the most recent document
+                timestamp, filename = recent_docs[0]
+                date_str = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"\nMost recently added document: {filename} (added: {date_str}).")
                 
         except Exception as e:
             logger.error(f"Error getting document statistics: {e}")
