@@ -1,15 +1,28 @@
-# Custom RAG - Local Question Answering
+# Advanced CustomRAG - Local Question Answering System
 
-This project implements a simple Retrieval-Augmented Generation (RAG) system that runs entirely locally on your machine. It uses documents you provide as a knowledge base to answer your questions.
+This project implements an advanced Retrieval-Augmented Generation (RAG) system that runs entirely locally on your machine. It uses a sophisticated multi-stage pipeline to intelligently process your questions and provide highly relevant answers from your document collection.
 
 ## Features
 
 * **Local First:** Runs completely offline (after downloading models and dependencies). No API keys or data sent to external services (unless you change the LLM/Embedding configuration).
+* **Advanced Query Processing:** Uses NLP techniques including:
+    * Query normalization with lemmatization and stemming
+    * Query expansion for improved document recall
+    * Intelligent query type classification (factual, procedural, conceptual, etc.)
+* **Multi-Strategy Retrieval:** Implements multiple document retrieval approaches:
+    * Semantic search using embeddings
+    * Keyword-based search for exact term matching
+    * Hybrid search combining semantic and keyword approaches
+    * Maximum Marginal Relevance (MMR) for diverse results
+* **Smart Context Generation:** Prioritizes and organizes retrieved information by:
+    * Scoring document relevance to your specific question
+    * Dynamically compressing context when needed
+    * Preserving the most important information for the LLM
 * **Custom Knowledge Base:** Simply place your documents (e.g., `.txt`, `.md`, `.pdf`, `.docx`, `.pptx`, `.epub`) into the `data` directory. Support for specific formats depends on installing optional dependencies.
-* **Document Processing:** Automatically handles various file formats, splitting them into appropriate chunks for indexing and retrieval.
 * **Conversation Context:** Maintains conversation memory for follow-up questions.
 * **Open Source Stack:** Built using popular Python libraries:
     * **Orchestration:** LangChain
+    * **NLP Processing:** NLTK
     * **LLM:** Ollama (running models like DeepSeek-R1 locally)
     * **Embeddings:** Sentence Transformers (Hugging Face `all-MiniLM-L6-v2`)
     * **Vector Store:** ChromaDB (local persistent storage)
@@ -56,7 +69,7 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
     ```bash
     pip install -r requirements.txt
     ```
-    *(This reads the `requirements.txt` file and installs libraries like LangChain, ChromaDB, Sentence-Transformers, and Unstructured with its extras for file parsing)*
+    *(This reads the `requirements.txt` file and installs libraries like LangChain, ChromaDB, Sentence-Transformers, NLTK, and Unstructured with its extras for file parsing)*
 
     **Platform-Specific Installation Notes:**
 
@@ -69,6 +82,7 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
         pip install --no-deps chromadb
         pip install pydantic hnswlib typing_extensions overrides
         pip install langchain langchain-community langchain-chroma langchain-huggingface sentence-transformers requests
+        pip install nltk numpy
         
         # Finally install document processing libraries
         pip install pypdf pdfplumber docx2txt python-docx python-pptx
@@ -88,7 +102,7 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
     ```
     *(Ensure the Ollama application/server is running in the background before executing this command and before running the main application later. See Troubleshooting section)*
 
-    *(Optional: If you wish to use a different model supported by Ollama, pull the desired model (e.g., `ollama pull llama3`) and update the `LLM_MODEL_NAME` variable within the `app.py` script)*
+    *(Optional: If you wish to use a different model supported by Ollama, pull the desired model (e.g., `ollama pull llama3`) and update the `LLM_MODEL_NAME` variable within the `customrag.py` script)*
 
 ## How to Use
 
@@ -100,9 +114,9 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
 3.  **Run the Application:**
     Make sure your virtual environment is activated. Then, run the main script from your terminal:
     ```bash
-    python app.py
+    python customrag.py
     ```
-    *(Or use `python3 app.py` if that's how you invoke Python 3 on your system)*
+    *(Or use `python3 customrag.py` if that's how you invoke Python 3 on your system)*
 
 4.  **First Run:** The very first time you run the script (or after adding/changing documents and deleting the `vector_store/` directory), it will perform these steps:
     * Load all supported documents found in the `data/` directory.
@@ -112,13 +126,18 @@ This project implements a simple Retrieval-Augmented Generation (RAG) system tha
 
 5.  **Subsequent Runs:** On future runs, if the `vector_store/` directory exists, the script will load the pre-computed embeddings directly from it, making the startup process much faster.
 
-6.  **Ask Questions:** Once the script prints the `--- RAG System Ready ---` message, you can type your questions related to the content of your documents into the terminal and press Enter.
+6.  **Ask Questions:** Once the application is ready, you can type your questions related to the content of your documents. The system will:
+   * Analyze and classify your query
+   * Select the optimal retrieval strategy
+   * Retrieve and prioritize the most relevant information
+   * Generate a response based on the retrieved context
 
 7.  **Commands:**
    * Type `exit` or `quit` to stop the application
    * Type `clear` to reset the conversation memory
    * Type `reindex` to reindex all documents
    * Type `stats` to see document statistics
+   * Type `help` to print the list of available commands
 
 ## Folder Structure
 
@@ -127,13 +146,60 @@ CustomRAG/
     ├── data/                # <-- Place your knowledge base items there (e.g., .pdf, .docx, .txt)
     ├── vector_store/        # Stores the generated vector embeddings (created automatically, ignored by Git)
     ├── venv/                # Python virtual environment folder (if named 'venv', ignored by Git)
-    ├── app.py               # Main application Python script
+    ├── customrag.py         # Main application Python script
     ├── .gitignore           # Specifies intentionally untracked files/folders for Git
     ├── requirements.txt     # List of Python dependencies to install
     └── README.md            # This file
 ```
 
-*(Note: Your virtual environment folder might have a different name like `.venv` or `RAGenv`. Ensure your `.gitignore` file lists the name you use)*
+## Advanced Features
+
+### Query Processing
+
+The system analyzes your questions to determine the most effective way to retrieve information:
+
+* **Query Type Classification:** Automatically detects if your question is factual, procedural, conceptual, comparative, or exploratory.
+* **Query Expansion:** Generates variations of your query using synonyms to improve retrieval recall.
+* **Normalization:** Applies stemming and lemmatization to match more relevant documents.
+
+### Retrieval Strategies
+
+Different retrieval strategies are automatically selected based on your query type:
+
+* **Semantic Search:** Used for conceptual and procedural questions to find content with similar meaning.
+* **Keyword Search:** Used for factual questions to find exact matches.
+* **Hybrid Search:** Combines semantic and keyword approaches with configurable weights.
+* **MMR (Maximum Marginal Relevance):** Used for exploratory and comparative questions to ensure diversity in results.
+
+### Context Processing
+
+Retrieved documents are intelligently processed before being sent to the LLM:
+
+* **Relevance Scoring:** Documents are scored based on how well they match your query.
+* **Priority-Based Selection:** High-relevance documents are prioritized for context inclusion.
+* **Context Compression:** When necessary, the system intelligently compresses content to fit more information into the context window.
+
+## Configuration Options
+
+The system can be configured using environment variables:
+
+* `CUSTOMRAG_DATA_PATH`: Path to your documents (default: "data" directory)
+* `CUSTOMRAG_VECTOR_PATH`: Path for storing vector embeddings (default: "vector_store" directory)
+* `CUSTOMRAG_EMBEDDING_MODEL`: Embedding model to use (default: "all-MiniLM-L6-v2")
+* `CUSTOMRAG_LLM_MODEL`: Ollama model to use (default: "deepseek-r1:8b")
+* `CUSTOMRAG_CHUNK_SIZE`: Document chunk size (default: 500)
+* `CUSTOMRAG_CHUNK_OVERLAP`: Overlap between chunks (default: 150)
+* `CUSTOMRAG_RETRIEVER_K`: Number of chunks to retrieve (default: 10)
+* `CUSTOMRAG_SEARCH_TYPE`: Default search type - "semantic", "keyword", "hybrid", or "mmr" (default: "hybrid")
+* `CUSTOMRAG_KEYWORD_RATIO`: Weight given to keyword results in hybrid search (default: 0.3)
+* `CUSTOMRAG_QUERY_EXPANSION`: Enable query expansion - "True" or "False" (default: "True")
+* `CUSTOMRAG_FORCE_REINDEX`: Force reindex on startup - "True" or "False" (default: "False")
+
+Example of setting environment variables (Linux/Mac):
+```bash
+export CUSTOMRAG_SEARCH_TYPE="hybrid"
+export CUSTOMRAG_KEYWORD_RATIO="0.4"
+```
 
 ## Document Format Support
 
@@ -157,7 +223,9 @@ For EPUB files, the system first tries to use the UnstructuredEPubLoader, and if
   * Type `reindex` in the application interface to trigger reindexing, or
   * Delete the entire `vector_store/` directory, and the script will perform the full re-indexing process on its next run.
 
-* **Ollama Not Running / Connection Errors:** The `app.py` script needs to connect to the Ollama application running as a background server. If the script fails immediately mentioning "connection refused," "could not connect," or similar network errors, the Ollama server is likely not running or accessible.
+* **NLP Resources:** On first run, the system may download NLTK resources (punkt, stopwords, wordnet). This happens automatically and only once.
+
+* **Ollama Not Running / Connection Errors:** The script needs to connect to the Ollama application running as a background server. If the script fails immediately mentioning "connection refused," "could not connect," or similar network errors, the Ollama server is likely not running or accessible.
     * **How to Check if Ollama is Running:** The most reliable cross-platform method is to use the Ollama command line in your terminal:
         ```bash
         ollama list
@@ -169,25 +237,11 @@ For EPUB files, the system first tries to use the UnstructuredEPubLoader, and if
   * **Package build errors:** Some packages may fail to build, especially on certain platforms like Apple Silicon. Follow the platform-specific installation instructions in the Installation section.
   * **Dependency conflicts:** If you encounter dependency conflicts, consider installing dependencies in stages as described in the platform-specific notes.
   * **PyTorch issues:** If PyTorch is causing problems, install it separately first with `pip install torch` before installing other requirements.
-  * **EPUB support issues:** If you have trouble with EPUB files, make sure you have both `unstructured[epub]` and `html2text` packages installed.
+  * **NLTK issues:** If you see NLTK-related errors, try manually downloading resources with `python -m nltk.downloader punkt stopwords wordnet`.
 
-* **`libmagic` Warning (Optional Enhancement):** During document loading, you might see a warning like `libmagic is unavailable...`. This message comes from the `unstructured` parsing library. `libmagic` is a system library that helps detect file types accurately based on their content, which can be more reliable than just using the file extension.
-    * The script **will generally run fine without it**.
-    * **Installation is optional** but can improve robustness.
-    * **On macOS:** Install via Homebrew: `brew install libmagic`
-    * **On Debian/Ubuntu Linux:** Use apt: `sudo apt-get update && sudo apt-get install libmagic1`
-    * **On other systems:** Use your system's package manager to install the `libmagic` library. No `pip install` is usually needed for this specific warning; `unstructured` uses the system library if available.
+* **Memory Issues (RAM):** If the script crashes, especially during embedding or when answering questions, your system might be running out of RAM. Close other resource-heavy applications. If issues persist, consider using a smaller LLM via Ollama (e.g., `phi3:medium`, `llama3:8b`). Remember to `ollama pull` the new model name and update the `LLM_MODEL_NAME` variable or environment setting.
 
-* **`CropBox missing` Warnings (Informational):** When processing PDF files, you might see multiple warnings like `CropBox missing from /Page, defaulting to MediaBox`.
-    * These indicate the PDF file is missing some optional layout metadata (the CropBox).
-    * The PDF parsing library is informing you it's using a default value based on the page's physical size (the MediaBox).
-    * These warnings are generally **safe to ignore** and usually don't negatively impact text extraction. Only investigate if you notice problems with the content retrieved from your PDFs.
-
-* **Memory Issues (RAM):** If `app.py` crashes, especially during embedding or when answering questions, your system might be running out of RAM. Close other resource-heavy applications. If issues persist, consider using a smaller LLM via Ollama (e.g., `phi3:medium`, `llama3:8b`). Remember to `ollama pull` the new model name and update the `LLM_MODEL_NAME` variable in `app.py`.
-
-* **Dependencies:** Ensure all Python packages from `requirements.txt` are installed in your *active* virtual environment. If you get `ImportError` (e.g., "ModuleNotFoundError"), double-check that your virtual environment is activated (you should see `(venv)` or similar in your prompt) and try running `pip install -r requirements.txt` again.
-
-* **Using GPU Acceleration:** The system will automatically detect and use:
+* **GPU Acceleration:** The system will automatically detect and use:
   * CUDA for NVIDIA GPUs
   * MPS for Apple Silicon Macs
   
