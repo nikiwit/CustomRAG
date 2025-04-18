@@ -114,7 +114,7 @@ This project implements an advanced Retrieval-Augmented Generation (RAG) system 
 3.  **Run the Application:**
     Make sure your virtual environment is activated. Then, run the main script from your terminal:
     ```bash
-    python customrag.py
+    python app.py
     ```
     *(Or use `python3 customrag.py` if that's how you invoke Python 3 on your system)*
 
