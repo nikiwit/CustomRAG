@@ -12,3 +12,5 @@ vector_store/
 # OS-specific files (Optional but recommended)
 .DS_Store
 Thumbs.db
+
+*.py
